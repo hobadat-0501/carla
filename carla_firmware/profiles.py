@@ -37,6 +37,8 @@ def parser(profile):
     p.add_argument("--max-speed-mps", type=float, default=10 if profile == "basic" else 35 if profile == "maneuver" else 0)
     p.add_argument("--fast", action="store_true")
     p.add_argument("--keep-vehicle", action="store_true")
+    p.add_argument("--no-spectator-follow", action="store_true",
+                   help="leave the CARLA spectator camera where it is")
     if profile == "basic":
         p.add_argument("--case", choices=("doc", "ngang", "phoi_hop"), default="ngang")
         p.add_argument("--speed-mps", type=float, default=2.0)

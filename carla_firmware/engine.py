@@ -296,6 +296,7 @@ def run_simulation(args):
         wall_start = time.monotonic()
         previous_frame = None
         previous_psi = None
+        last_spectator_frame = -10
         phase = "warmup" if args.mode == "pad" else "attach"
         speed_stable = 0
         mass, friction = float(physics.mass), sum(float(w.tire_friction) for w in physics.wheels) / 4
@@ -308,6 +309,13 @@ def run_simulation(args):
                 if args.mode == "attach":
                     snapshot = world.wait_for_tick(args.timeout)
                 snapshot, state, transform, velocity, acceleration, angular = actor_state(world, vehicle)
+                if not args.no_spectator_follow and snapshot.frame - last_spectator_frame >= 5:
+                    vehicle_transform = vehicle.get_transform()
+                    camera_location = vehicle_transform.transform(carla.Location(x=-8.0, z=4.0))
+                    world.get_spectator().set_transform(carla.Transform(
+                        camera_location,
+                        carla.Rotation(pitch=-18.0, yaw=vehicle_transform.rotation.yaw)))
+                    last_spectator_frame = snapshot.frame
                 now_sim = float(snapshot.timestamp.elapsed_seconds)
                 if sim_start is None:
                     sim_start = now_sim
