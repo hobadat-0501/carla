@@ -338,7 +338,7 @@ def run_simulation(args):
             (out / "test_road.xodr").write_text(_road_xodr(), encoding="utf-8")
 
         columns = ["frame", "t_s", "t_sim_s", "X_m", "Y_m", "Z_m", "psi_rad", "roll_deg", "pitch_deg",
-                   "target_speed_kmh", "target_steer_deg",
+                   "target_speed_kmh", "target_steer_deg", "steer_measured_deg",
                    "vx_mps", "vy_mps", "vz_mps", "speed_kmh", "r_radps", "ax_mps2", "ay_mps2",
                    "beta_rad", "angular_z_snapshot_raw", "r_yaw_difference_radps",
                    "steer_fl_deg", "steer_fr_deg", "steer_fl_deg_carla", "steer_fr_deg_carla",
@@ -421,6 +421,7 @@ def run_simulation(args):
                        "roll_deg": float(transform.rotation.roll), "pitch_deg": float(transform.rotation.pitch),
                        "target_speed_kmh": (args.active_step["speed_kmh"] if args.profile == "custom" else float("nan")),
                        "target_steer_deg": (args.active_step["steer_deg"] if args.profile == "custom" else float("nan")),
+                       "steer_measured_deg": math.degrees(delta),
                        "vx_mps": vx, "vy_mps": vy, "vz_mps": float(velocity.z),
                        "speed_kmh": 3.6 * math.hypot(vx, vy), "r_radps": base["r_radps"],
                        "ax_mps2": ax, "ay_mps2": ay,

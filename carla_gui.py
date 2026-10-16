@@ -3,14 +3,19 @@
 from __future__ import annotations
 
 import json
+import csv
+import math
 import queue
 import subprocess
 import sys
 import threading
+import time
 from datetime import datetime
 from pathlib import Path
 import tkinter as tk
 from tkinter import messagebox, ttk
+from matplotlib.backends.backend_tkagg import FigureCanvasTkAgg
+from matplotlib.figure import Figure
 
 
 ROOT = Path(__file__).resolve().parent
@@ -24,8 +29,19 @@ class CarlaControlPanel:
         self.process = None
         self.messages: queue.Queue[str] = queue.Queue()
         self.steps: list[dict] = []
+        self.output_csv: Path | None = None
+        self.last_plot_update = 0.0
+        self.csv_mtime = None
 
-        settings = ttk.LabelFrame(root, text="Thiết lập mô phỏng", padding=8)
+        notebook = ttk.Notebook(root)
+        notebook.pack(fill="both", expand=True)
+        control_tab = ttk.Frame(notebook)
+        plot_tab = ttk.Frame(notebook)
+        notebook.add(control_tab, text="Điều khiển")
+        notebook.add(plot_tab, text="Telemetry và biểu đồ")
+        self.notebook = notebook
+
+        settings = ttk.LabelFrame(control_tab, text="Thiết lập mô phỏng", padding=8)
         settings.pack(fill="x", padx=10, pady=(10, 5))
         self.map_var = tk.StringVar(value="Town06")
         self.spawn_var = tk.StringVar(value="0")
@@ -40,7 +56,7 @@ class CarlaControlPanel:
             ttk.Label(settings, text=label).grid(row=0, column=col, sticky="w", padx=4)
             ttk.Entry(settings, textvariable=var, width=width).grid(row=1, column=col, sticky="ew", padx=4)
 
-        editor = ttk.LabelFrame(root, text="Bước điều khiển", padding=8)
+        editor = ttk.LabelFrame(control_tab, text="Bước điều khiển", padding=8)
         editor.pack(fill="x", padx=10, pady=5)
         self.name_var = tk.StringVar()
         self.speed_var = tk.StringVar(value="20")
@@ -54,7 +70,7 @@ class CarlaControlPanel:
         ttk.Button(editor, text="Cập nhật bước chọn", command=self.update_step).grid(row=1, column=5, padx=4)
         ttk.Button(editor, text="Xóa bước chọn", command=self.delete_step).grid(row=1, column=6, padx=4)
 
-        table_frame = ttk.Frame(root)
+        table_frame = ttk.Frame(control_tab)
         table_frame.pack(fill="both", expand=True, padx=10, pady=5)
         self.table = ttk.Treeview(table_frame, columns=("name", "speed", "steer", "duration"), show="headings", height=8)
         for col, title, width in (("name", "Tên bước", 300), ("speed", "Tốc độ km/h", 150),
@@ -67,7 +83,7 @@ class CarlaControlPanel:
         self.table.configure(yscrollcommand=scrollbar.set)
         self.table.bind("<<TreeviewSelect>>", self.select_step)
 
-        actions = ttk.Frame(root)
+        actions = ttk.Frame(control_tab)
         actions.pack(fill="x", padx=10, pady=5)
         self.run_button = ttk.Button(actions, text="Chạy kịch bản", command=self.start_run)
         self.run_button.pack(side="left")
@@ -75,15 +91,107 @@ class CarlaControlPanel:
         self.stop_button.pack(side="left", padx=6)
         ttk.Label(actions, text="Kết quả lưu dưới ket_qua/gui_<thời_gian>").pack(side="left", padx=12)
 
-        output_frame = ttk.LabelFrame(root, text="Tiến trình CARLA", padding=6)
+        output_frame = ttk.LabelFrame(control_tab, text="Tiến trình CARLA", padding=6)
         output_frame.pack(fill="both", expand=True, padx=10, pady=(5, 10))
         self.output = tk.Text(output_frame, height=12, wrap="word", state="disabled")
         self.output.pack(side="left", fill="both", expand=True)
         out_scroll = ttk.Scrollbar(output_frame, orient="vertical", command=self.output.yview)
         out_scroll.pack(side="right", fill="y")
         self.output.configure(yscrollcommand=out_scroll.set)
+
+        self.live_values = ttk.Label(plot_tab, text="Chưa có dữ liệu telemetry", padding=8)
+        self.live_values.pack(fill="x")
+        self.figure = Figure(figsize=(12, 8), dpi=90, constrained_layout=True)
+        self.axes = self.figure.subplots(4, 2).flatten()
+        self.canvas = FigureCanvasTkAgg(self.figure, master=plot_tab)
+        self.canvas.get_tk_widget().pack(fill="both", expand=True)
+        self.init_plot_axes()
         self.load_example()
         root.after(100, self.poll_process)
+
+    def init_plot_axes(self):
+        titles = ("Quỹ đạo XY", "Vận tốc dọc", "Vận tốc góc yaw", "Góc lái bánh trước",
+                  "Hướng xe", "Gia tốc dọc", "Gia tốc ngang", "Điều khiển ga/phanh")
+        ylabels = ("Y (m)", "km/h", "rad/s", "deg", "deg", "m/s²", "m/s²", "Mức điều khiển")
+        for axis, title, ylabel in zip(self.axes, titles, ylabels):
+            axis.set_title(title)
+            axis.set_ylabel(ylabel)
+            axis.grid(True, alpha=.3)
+        self.axes[0].set_xlabel("X (m)")
+        for axis in self.axes[1:]:
+            axis.set_xlabel("Thời gian mô phỏng (s)")
+        self.canvas.draw_idle()
+
+    def update_plot(self):
+        if not self.output_csv or not self.output_csv.exists():
+            return
+        try:
+            modified = self.output_csv.stat().st_mtime_ns
+            if modified == self.csv_mtime:
+                return
+            with self.output_csv.open("r", newline="", encoding="utf-8") as stream:
+                rows = list(csv.DictReader(stream))
+            if not rows:
+                return
+            self.csv_mtime = modified
+            def values(key):
+                result = []
+                for row in rows:
+                    try:
+                        value = float(row.get(key, "nan"))
+                    except (TypeError, ValueError):
+                        value = float("nan")
+                    result.append(value)
+                return result
+
+            t = values("t_s")
+            x, y = values("X_m"), values("Y_m")
+            vx = [value * 3.6 for value in values("vx_mps")]
+            vx_set = values("target_speed_kmh")
+            steer, steer_set = values("steer_measured_deg"), values("target_steer_deg")
+            r = values("r_radps")
+            heading = [math.degrees(value) for value in values("psi_rad")]
+            ax, ay = values("ax_mps2"), values("ay_mps2")
+            throttle, brake = values("throttle_applied"), values("brake_applied")
+            for axis, title in zip(self.axes, ("Quỹ đạo XY", "Vận tốc dọc", "Vận tốc góc yaw",
+                                               "Góc lái bánh trước", "Hướng xe", "Gia tốc dọc",
+                                               "Gia tốc ngang", "Điều khiển ga/phanh")):
+                axis.clear()
+                axis.set_title(title)
+                axis.grid(True, alpha=.3)
+            self.axes[0].plot(x, y, color="tab:blue", label="Thực chạy")
+            self.axes[0].set_xlabel("X (m)"); self.axes[0].set_ylabel("Y (m)")
+            self.axes[0].axis("equal"); self.axes[0].legend(loc="best")
+
+            self.axes[1].plot(t, vx, color="tab:blue", label="Thực chạy Vx")
+            self.axes[1].step(t, vx_set, where="post", color="tab:red", linestyle="--", label="Đặt tốc độ")
+            self.axes[1].set_ylabel("km/h"); self.axes[1].legend(loc="best")
+            self.axes[2].plot(t, r, color="tab:blue", label="Thực chạy")
+            self.axes[2].set_ylabel("rad/s"); self.axes[2].legend(loc="best")
+            self.axes[3].plot(t, steer, color="tab:blue", label="Thực chạy")
+            self.axes[3].step(t, steer_set, where="post", color="tab:red", linestyle="--", label="Đặt góc lái")
+            self.axes[3].set_ylabel("deg"); self.axes[3].legend(loc="best")
+            self.axes[4].plot(t, heading, color="tab:blue", label="Thực chạy")
+            self.axes[4].set_ylabel("deg"); self.axes[4].legend(loc="best")
+            self.axes[5].plot(t, ax, color="tab:blue", label="Thực chạy")
+            self.axes[5].set_ylabel("m/s²"); self.axes[5].legend(loc="best")
+            self.axes[6].plot(t, ay, color="tab:blue", label="Thực chạy")
+            self.axes[6].set_ylabel("m/s²"); self.axes[6].legend(loc="best")
+            self.axes[7].plot(t, throttle, label="Ga")
+            self.axes[7].plot(t, brake, label="Phanh")
+            self.axes[7].set_ylabel("0–1"); self.axes[7].legend(loc="best")
+            for axis in self.axes[1:]:
+                axis.set_xlabel("Thời gian (s)")
+            self.canvas.draw_idle()
+            last = rows[-1]
+            self.live_values.configure(text=(
+                f"t={last.get('t_s','')} s | X={last.get('X_m','')} m, Y={last.get('Y_m','')} m | "
+                f"Vx={float(last.get('vx_mps', 0))*3.6:.2f} km/h | r={float(last.get('r_radps', 0)):.3f} rad/s | "
+                f"góc lái={float(last.get('steer_measured_deg', 0)):.2f}° | "
+                f"hướng={math.degrees(float(last.get('psi_rad', 0))):.2f}° | "
+                f"ax={float(last.get('ax_mps2', 0)):.2f}, ay={float(last.get('ay_mps2', 0)):.2f} m/s²"))
+        except (OSError, csv.Error, ValueError, TypeError):
+            return
 
     def load_example(self):
         path = ROOT / "kich_ban_nguoi_dung.json"
@@ -186,6 +294,8 @@ class CarlaControlPanel:
         command = [sys.executable, str(ROOT / "carla_sim.py"), "custom", "--script", str(script_path),
                    "--host", self.host_var.get().strip() or "127.0.0.1", "--port", str(port), "--out", str(out)]
         self.append_output("\n$ " + " ".join(command) + "\n")
+        self.output_csv = out / "states_realtime.csv"
+        self.csv_mtime = None
         try:
             self.process = subprocess.Popen(command, cwd=ROOT, stdout=subprocess.PIPE,
                                             stderr=subprocess.STDOUT, text=True, bufsize=1)
@@ -213,6 +323,9 @@ class CarlaControlPanel:
             self.stop_button.configure(state="disabled")
             self.append_output(f"CARLA runner kết thúc với mã {self.process.returncode}.\n")
             self.process = None
+        if time.monotonic() - self.last_plot_update >= 1.0:
+            self.update_plot()
+            self.last_plot_update = time.monotonic()
         self.root.after(100, self.poll_process)
 
     def stop_run(self):
