@@ -1,0 +1,15 @@
+{
+  "vehicle": "vehicle.tesla.model3",
+  "actor_id": 25,
+  "versions": {
+    "client": "0.9.15",
+    "server": "0.9.15"
+  },
+  "mode": "pad",
+  "wheelbase_m": 3.0046093749999727,
+  "mass_kg": 1845.0,
+  "mu_label": null,
+  "mass_scale": 1.0,
+  "tire_friction_requested": null,
+  "coordinate_convention": "body X forward, Y left; SI units"
+}

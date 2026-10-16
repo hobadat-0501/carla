@@ -12,12 +12,13 @@ def main(argv=None):
     sub = parser.add_subparsers(dest="command", required=True)
     for name, description in (("basic", "Basic parameter collection"),
                               ("maneuver", "Repeatable maneuver test"),
-                              ("realtime", "Realtime simulation or read-only attach")):
+                              ("realtime", "Realtime simulation or read-only attach"),
+                              ("scenario", "Run a named dynamics test on the common visible test map")):
         sub.add_parser(name, add_help=False, help=description)
     sub.add_parser("fit", add_help=False, help="Fit model parameters")
     sub.add_parser("compare", add_help=False, help="Compare model replay with CARLA runs")
     args, rest = parser.parse_known_args(argv)
-    if args.command in ("basic", "maneuver", "realtime"):
+    if args.command in ("basic", "maneuver", "realtime", "scenario"):
         try:
             return profiles.run(args.command, rest)
         except KeyboardInterrupt:

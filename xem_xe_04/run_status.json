@@ -1,0 +1,7 @@
+{
+  "result": "duration_complete",
+  "rows": 1138,
+  "simulated_s": 11.369999745860696,
+  "wall_elapsed_s": 11.37038728699963,
+  "telemetry_source": "state_estimate"
+}

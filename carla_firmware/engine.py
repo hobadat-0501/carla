@@ -14,6 +14,13 @@ from .runtime import (actor_state, cleanup, configure_world, physics_report,
                            tick_checked, validate_carla, write_json)
 from .model import advance as advance_model
 
+SCENARIO_SUITE = (
+    ("straight", 3.0), ("speed_step", 5.0), ("coastdown", 4.0),
+    ("recovery", 5.0), ("steer_ramp", 3.0), ("jturn", 4.0),
+    ("double_pulse", 4.0), ("sine_dwell", 4.0),
+    ("constant_radius", 3.0), ("braking", 5.0),
+)
+
 
 def _body(x, y, yaw):
     c, s = math.cos(yaw), math.sin(yaw)
@@ -25,7 +32,7 @@ def _road_xodr():
 <OpenDRIVE><header revMajor="1" revMinor="4" name="firmware_pad" version="1.00" date="2026-10-16" north="200" south="-200" east="1200" west="-1200"/>
 <road name="firmware_pad" length="2400" id="1" junction="-1"><planView><geometry s="0" x="-1200" y="0" hdg="0" length="2400"><line/></geometry></planView>
 <elevationProfile><elevation s="0" a="0" b="0" c="0" d="0"/></elevationProfile>
-<lanes><laneSection s="0"><left><lane id="1" type="driving" level="false"><link/><width sOffset="0" a="4" b="0" c="0" d="0"/></lane></left><center><lane id="0" type="none" level="false"><roadMark sOffset="0" type="none" weight="standard" color="standard" width="0.12"/></lane></center><right><lane id="-1" type="driving" level="false"><link/><width sOffset="0" a="4" b="0" c="0" d="0"/></lane></right></laneSection></lanes></road></OpenDRIVE>'''
+<lanes><laneSection s="0"><left><lane id="1" type="driving" level="false"><link/><width sOffset="0" a="50" b="0" c="0" d="0"/></lane></left><center><lane id="0" type="none" level="false"><roadMark sOffset="0" type="none" weight="standard" color="standard" width="0.12"/></lane></center><right><lane id="-1" type="driving" level="false"><link/><width sOffset="0" a="50" b="0" c="0" d="0"/></lane></right></laneSection></lanes></road></OpenDRIVE>'''
 
 
 def _controls(args, row, elapsed, phase):
@@ -47,7 +54,12 @@ def _controls(args, row, elapsed, phase):
 
     if elapsed < 2.0:
         return 0.0, 1.0, 0.0, "stabilize"
-    target = args.speed_kmh / 3.6
+    scenario = getattr(args, "scenario", None) if args.profile == "scenario" else None
+    case = getattr(args, "suite_segment", "straight") if scenario == "suite" else scenario
+    target_kmh = args.speed_kmh
+    if case == "speed_step" and getattr(args, "suite_segment_t", elapsed - args.phase_start) >= .5:
+        target_kmh = args.step_speed_kmh
+    target = target_kmh / 3.6
     error = target - row["vx_mps"]
     # The previous low proportional gain left a steady speed error of ~4 km/h
     # against CARLA's rolling/drive resistance, preventing maneuver warmup.
@@ -57,12 +69,36 @@ def _controls(args, row, elapsed, phase):
         return throttle, brake, 0.0, "warmup"
     if phase == "cruise":
         return throttle, brake, 0.0, "cruise"
-    t = elapsed - args.phase_start
+    t = getattr(args, "suite_segment_t", elapsed - args.phase_start) if scenario == "suite" else elapsed - args.phase_start
     angle = math.radians(args.delta_deg) * args.direction
     steer_angle = 0.0
-    if args.maneuver == "jturn" and 0.5 <= t < 3.0:
+    if case == "coastdown":
+        return 0.0, 0.0, 0.0, "coastdown"
+    if case == "braking":
+        if t >= .5:
+            return 0.0, args.brake_pulse, 0.0, "braking"
+        return throttle, 0.0, 0.0, "brake_approach"
+    if case == "constant_radius":
+        angle = math.atan2(args.wheelbase_m, args.radius_m) * args.direction
         steer_angle = angle
-    elif args.maneuver == "double_pulse":
+    elif case == "steer_ramp":
+        ramp = min(1.0, max(0.0, t / .75))
+        steer_angle = angle * ramp if t < 2.75 else 0.0
+    elif case == "sine_dwell":
+        half_wave = .5 / args.sine_hz
+        start = .5
+        if start <= t < start + half_wave:
+            steer_angle = angle * math.sin(math.pi * (t - start) / half_wave)
+        elif start + half_wave <= t < start + half_wave + .5:
+            steer_angle = angle
+        elif start + half_wave + .5 <= t < start + 2 * half_wave + .5:
+            steer_angle = -angle * math.sin(math.pi * (t - (start + half_wave + .5)) / half_wave)
+        elif start + 2 * half_wave + .5 <= t < start + 2 * half_wave + 1.0:
+            steer_angle = -angle
+    elif case == "jturn" or (scenario is None and args.maneuver == "jturn"):
+        if 0.5 <= t < 3.0:
+            steer_angle = angle
+    elif case == "double_pulse" or (scenario is None and args.maneuver == "double_pulse"):
         if .5 <= t < 1.5:
             steer_angle = angle
         elif 2.0 <= t < 3.0:
@@ -259,6 +295,7 @@ def run_simulation(args):
             for _ in range(3):
                 tick_checked(world, None, args.dt, args.timeout)
         physics, params = physics_report(vehicle, args.wheelbase)
+        args.wheelbase_m = params["wheelbase_m"]
         max_steer = max(float(w.max_steer_angle) for w in list(physics.wheels)[:2])
         args.max_steer_deg = max_steer
         params.update(client_version=versions[0], server_version=versions[1], map=world.get_map().name,
@@ -268,6 +305,8 @@ def run_simulation(args):
         write_json(out / "tham_so_carla.json", params)
         write_json(out / "metadata.json", {"vehicle": vehicle.type_id, "actor_id": vehicle.id,
                     "versions": {"client": versions[0], "server": versions[1]}, "mode": args.mode,
+                    "scenario": getattr(args, "scenario", getattr(args, "maneuver", None)),
+                    "map": world.get_map().name,
                     "wheelbase_m": params["wheelbase_m"], "mass_kg": params["mass"],
                     "mu_label": getattr(args, "mu_label", None),
                     "mass_scale": getattr(args, "mass_scale", 1.0),
@@ -293,13 +332,16 @@ def run_simulation(args):
         online_model = None if args.no_model else _OnlineBicycle(params["wheelbase_m"], float(physics.mass),
                             args.lf_fraction, params["bounding_box_extent_m"])
         plotter = _LivePlot(args.plot_window) if getattr(args, "plot", False) else None
-        path = out / ("states_realtime.csv" if args.profile == "realtime" else "states.csv")
+        path = out / ("states_realtime.csv" if args.profile in ("realtime", "scenario") else "states.csv")
         sim_start = None
         wall_start = time.monotonic()
         previous_frame = None
         previous_psi = None
         last_spectator_frame = -10
+        last_hud_frame = -10
+        last_path_point = None
         phase = "warmup" if args.mode == "pad" else "attach"
+        last_throttle_command = 0.0
         speed_stable = 0
         mass, friction = float(physics.mass), sum(float(w.tire_friction) for w in physics.wheels) / 4
         termination_reason = "duration_complete"
@@ -313,10 +355,10 @@ def run_simulation(args):
                 snapshot, state, transform, velocity, acceleration, angular = actor_state(world, vehicle)
                 if not args.no_spectator_follow and snapshot.frame - last_spectator_frame >= 5:
                     vehicle_transform = vehicle.get_transform()
-                    camera_location = vehicle_transform.transform(carla.Location(x=-8.0, z=4.0))
+                    camera_location = vehicle_transform.transform(carla.Location(x=-14.0, z=7.0))
                     world.get_spectator().set_transform(carla.Transform(
                         camera_location,
-                        carla.Rotation(pitch=-18.0, yaw=vehicle_transform.rotation.yaw)))
+                        carla.Rotation(pitch=-22.0, yaw=vehicle_transform.rotation.yaw)))
                     last_spectator_frame = snapshot.frame
                 now_sim = float(snapshot.timestamp.elapsed_seconds)
                 if sim_start is None:
@@ -385,7 +427,7 @@ def run_simulation(args):
                 next_control = None
                 finish_maneuver = False
                 if args.mode == "pad":
-                    if args.profile in ("maneuver", "realtime"):
+                    if args.profile in ("maneuver", "realtime", "scenario"):
                         if phase == "warmup":
                             if elapsed >= args.stabilize_s:
                                 speed_stable = speed_stable + 1 if abs(args.speed_kmh / 3.6 - vx) < .14 else 0
@@ -393,9 +435,23 @@ def run_simulation(args):
                                     phase, args.phase_start = "maneuver", elapsed
                             if elapsed > args.warmup_limit_s + args.stabilize_s and phase == "warmup":
                                 raise TimeoutError("Could not reach maneuver entry speed before warmup timeout")
-                        elif phase == "cruise" and args.profile == "realtime" and args.repeat_s > 0 and elapsed - args.phase_start >= args.repeat_s:
+                        elif phase == "cruise" and args.profile in ("realtime", "scenario") and args.repeat_s > 0 and elapsed - args.phase_start >= args.repeat_s:
                             phase, args.phase_start = "maneuver", elapsed
                             args.direction *= -1
+                        if args.profile == "scenario" and args.scenario == "suite" and phase != "warmup":
+                            suite_elapsed = elapsed - args.phase_start
+                            suite_length = sum(duration for _, duration in SCENARIO_SUITE)
+                            if suite_elapsed >= suite_length:
+                                termination_reason = "duration_complete"
+                                break
+                            cursor = 0.0
+                            for segment, segment_duration in SCENARIO_SUITE:
+                                if suite_elapsed < cursor + segment_duration:
+                                    phase = segment
+                                    args.suite_segment = segment
+                                    args.suite_segment_t = suite_elapsed - cursor
+                                    break
+                                cursor += segment_duration
                         next_control = _controls(args, row, elapsed, phase)[:3]
                         finish_maneuver = phase == "maneuver" and elapsed - args.phase_start >= getattr(args, "maneuver_duration", 6.0)
                     else:
@@ -408,6 +464,16 @@ def run_simulation(args):
                     row["phase_next"] = phase
                     row["throttle_next"], row["brake_next"], row["steer_next_norm"] = (
                         float("nan"), float("nan"), float("nan"))
+                if args.mode == "pad" and next_control is not None:
+                    desired_throttle, desired_brake, desired_steer = next_control
+                    max_change = args.throttle_ramp_per_s * args.dt
+                    if desired_brake > 0:
+                        applied_throttle_command = 0.0
+                    else:
+                        applied_throttle_command = last_throttle_command + max(
+                            -max_change, min(max_change, desired_throttle - last_throttle_command))
+                    next_control = (applied_throttle_command, desired_brake, desired_steer)
+                    row["throttle_next"] = applied_throttle_command
                 writer.writerow(row)
                 frame_count += 1
                 previous_frame = snapshot.frame
@@ -418,7 +484,7 @@ def run_simulation(args):
 
                 if args.mode == "pad":
                     if finish_maneuver:
-                        if args.profile == "realtime" and args.repeat_s > 0:
+                        if args.profile in ("realtime", "scenario") and args.repeat_s > 0:
                             phase = "cruise"
                             args.phase_start = elapsed
                         else:
@@ -426,6 +492,7 @@ def run_simulation(args):
                             break
                     thr, brk, steer = next_control
                     vehicle.apply_control(carla.VehicleControl(throttle=thr, brake=brk, steer=steer))
+                    last_throttle_command = thr
                     if args.max_speed_mps > 0 and vx > args.max_speed_mps:
                         termination_reason = "cutoff_speed"
                         break
@@ -445,6 +512,27 @@ def run_simulation(args):
                         break
                 if args.log_hz > 0 and frame_count % max(1, round(1 / (args.log_hz * args.dt))) == 0:
                     print(f"t={elapsed:7.2f}s speed={row['speed_kmh']:6.2f} km/h ay={ay:+6.2f} m/s2", flush=True)
+                    if (args.mode == "pad" and not args.no_hud and
+                            snapshot.frame - last_hud_frame >= max(1, round(1 / (args.log_hz * args.dt)))):
+                        location = transform.location
+                        label = getattr(args, "scenario", None) or getattr(args, "maneuver", "basic")
+                        hud = (f"{label} | {phase}\n"
+                               f"t={elapsed:.1f}s  v={row['speed_kmh']:.1f} km/h\n"
+                               f"vx={vx:.2f} vy={vy:.2f} m/s  r={row['r_radps']:.3f} rad/s\n"
+                               f"ax={ax:.2f} ay={ay:.2f} m/s2  beta={row['beta_rad']:.3f} rad\n"
+                               f"steer={row['steer_applied_norm']:.2f} throttle={row['throttle_applied']:.2f} brake={row['brake_applied']:.2f}")
+                        world.debug.draw_string(
+                            carla.Location(x=location.x, y=location.y, z=location.z + 4.0), hud,
+                            draw_shadow=True, color=carla.Color(80, 255, 100),
+                            life_time=max(.35, 2.0 / args.log_hz))
+                        if last_path_point is not None:
+                            path_location = carla.Location(x=location.x, y=location.y, z=location.z + .25)
+                            world.debug.draw_line(last_path_point, path_location, thickness=.08,
+                                color=carla.Color(255, 210, 30), life_time=30.0)
+                        else:
+                            path_location = carla.Location(x=location.x, y=location.y, z=location.z + .25)
+                        last_path_point = path_location
+                        last_hud_frame = snapshot.frame
                     if plotter is not None:
                         plotter.update(row)
                 if frame_count % max(1, round(args.param_refresh / args.dt)) == 0:

@@ -29,6 +29,32 @@ python carla_sim.py fit --runs ket_qua/ngang_01 --out ket_qua/model.json
 
 Select a new output directory for every run.
 
+## Visible dynamics tests
+
+`scenario` runs one selected test on the shared OpenDRIVE flat test map. The CARLA window shows a live HUD with phase, speed, body velocities, accelerations, yaw rate, steering, throttle, and brake; a short trajectory trail is drawn behind the vehicle.
+
+Run the complete sequence in one CARLA world and one CSV. Its `phase` column and HUD label move through straight, speed step, coastdown, recovery, steering ramp, J-turn, double pulse, sine-with-dwell, constant radius, and braking:
+
+```bash
+python carla_sim.py scenario --scenario suite --speed-kmh 25 --step-speed-kmh 35 --out ket_qua/suite_01
+```
+
+Individual cases can also be run separately on the same map:
+
+```bash
+python carla_sim.py scenario --scenario straight --speed-kmh 25 --out ket_qua/straight_01
+python carla_sim.py scenario --scenario speed_step --speed-kmh 25 --step-speed-kmh 35 --out ket_qua/speed_step_01
+python carla_sim.py scenario --scenario coastdown --speed-kmh 25 --out ket_qua/coastdown_01
+python carla_sim.py scenario --scenario steer_ramp --speed-kmh 25 --delta-deg 2 --out ket_qua/steer_ramp_01
+python carla_sim.py scenario --scenario jturn --speed-kmh 25 --delta-deg 2 --out ket_qua/jturn_01
+python carla_sim.py scenario --scenario double_pulse --speed-kmh 25 --delta-deg 2 --out ket_qua/double_pulse_01
+python carla_sim.py scenario --scenario sine_dwell --speed-kmh 25 --delta-deg 2 --out ket_qua/sine_dwell_01
+python carla_sim.py scenario --scenario constant_radius --speed-kmh 25 --radius-m 60 --out ket_qua/radius_01
+python carla_sim.py scenario --scenario braking --speed-kmh 25 --brake-pulse 1 --out ket_qua/braking_01
+```
+
+The scenario command uses a broad flat pad so steering tests remain on the generated surface. `--duration` is the safety time limit; most individual scenarios finish after `--maneuver-duration` once warmup is complete. `--repeat-s` repeats the maneuver after a short straight segment. These are simulation experiments, not certification tests.
+
 ## API and telemetry limits
 
 `carla_firmware/api.py` is the stable client-side API. It reports versions, vehicle physics, snapshot state, controls, weather, map data, and wheel steering. Published [CARLA 0.9.15](https://carla.readthedocs.io/en/0.9.15/python_api/) and [0.9.16](https://carla.readthedocs.io/en/0.9.16/python_api/) Python APIs do not document a getter for per-wheel tire load, force, slip, or angular speed; 0.9.16's `show_debug_telemetry()` displays a debug overlay but does not return those values to Python. The compatibility layer preserves those fields as null and exposes state-derived axle slip angles as estimates. It probes for getters so a custom server/client build can supply native fields, but it cannot add telemetry to a stock server.
