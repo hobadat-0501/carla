@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import argparse
+import json
 import math
 from datetime import datetime
 from pathlib import Path
@@ -16,14 +17,14 @@ def parser(profile):
     p = argparse.ArgumentParser(description="CARLA 0.9.15 real-time simulation firmware")
     p.add_argument("--mode", choices=("pad", "attach"), default="pad")
     p.add_argument("--map", dest="map_name", help="load a built-in CARLA map, for example Town03")
-    p.add_argument("--spawn-index", type=int, default=0, help="vehicle spawn point index on --map")
+    p.add_argument("--spawn-index", type=int, help="vehicle spawn point index on --map")
     p.add_argument("--host", default="127.0.0.1")
     p.add_argument("--port", type=int, default=2000)
     p.add_argument("--timeout", type=float, default=30 if profile in ("realtime", "scenario") else 90)
     p.add_argument("--vehicle", default="vehicle.tesla.model3")
     p.add_argument("--wheelbase", type=float)
     p.add_argument("--dt", type=float, default=.01 if profile != "basic" else .02)
-    p.add_argument("--duration", type=float, default=60 if profile in ("realtime", "scenario") else 18)
+    p.add_argument("--duration", type=float, default=0 if profile == "custom" else 60 if profile in ("realtime", "scenario") else 18)
     p.add_argument("--out", type=Path)
     p.add_argument("--tire-friction", type=float)
     p.add_argument("--mass-scale", type=float, default=1.0)
@@ -78,6 +79,9 @@ def parser(profile):
         p.add_argument("--warmup-limit-s", type=float, default=40)
         p.add_argument("--stabilize-s", type=float, default=2)
         p.add_argument("--repeat-s", type=float, default=0)
+    elif profile == "custom":
+        p.add_argument("--script", type=Path, required=True,
+                       help="JSON file with map, spawn_index and timed speed/steering steps")
     else:
         p.add_argument("--maneuver", choices=("jturn", "double_pulse", "none"), default="double_pulse")
         p.add_argument("--speed-kmh", type=float, default=30)
@@ -96,12 +100,41 @@ def parser(profile):
 def run(profile, argv=None):
     p = parser(profile)
     args = p.parse_args(argv)
+    if profile == "custom":
+        try:
+            script = json.loads(args.script.expanduser().read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError) as exc:
+            p.error(f"Cannot read custom script {args.script}: {exc}")
+        if not isinstance(script, dict) or not isinstance(script.get("steps"), list) or not script["steps"]:
+            p.error("Custom script must be a JSON object with a non-empty 'steps' array")
+        for index, step in enumerate(script["steps"], start=1):
+            if not isinstance(step, dict):
+                p.error(f"Step {index} must be an object")
+            try:
+                speed = float(step["speed_kmh"])
+                steer = float(step["steer_deg"])
+                duration = float(step["duration_s"])
+            except (KeyError, TypeError, ValueError):
+                p.error(f"Step {index} requires numeric speed_kmh, steer_deg, duration_s")
+            if not all(math.isfinite(value) for value in (speed, steer, duration)):
+                p.error(f"Step {index} values must be finite")
+            if not (0 <= speed <= 100 and abs(steer) <= 30 and duration > 0):
+                p.error(f"Step {index}: speed_kmh must be 0..100, steer_deg -30..30, duration_s > 0")
+            step["name"] = str(step.get("name") or f"step_{index:02d}")
+            step["speed_kmh"], step["steer_deg"], step["duration_s"] = speed, steer, duration
+        args.custom_steps = script["steps"]
+        args.custom_script = script
+        args.vehicle = str(script.get("vehicle") or args.vehicle)
+        args.map_name = args.map_name or script.get("map", "Town06")
+        args.spawn_index = args.spawn_index if args.spawn_index is not None else int(script.get("spawn_index", 0))
+    if args.spawn_index is None:
+        args.spawn_index = 0
     if profile == "scenario" and args.map_name is None:
         args.map_name = "Town03"
     if profile == "scenario" and args.maneuver_duration is None:
         args.maneuver_duration = 3.0 if args.scenario == "constant_radius" else 6.0
     args.profile = profile
-    args.realtime = profile in ("realtime", "scenario") and not args.fast
+    args.realtime = profile in ("realtime", "scenario", "custom") and not args.fast
     args.log_hz = args.print_hz
     args.phase_start = 0.0
     args.max_steer_deg = 30.0
@@ -145,6 +178,8 @@ def run(profile, argv=None):
         p.error("Invalid scenario parameter")
     if profile == "scenario" and args.mode != "pad":
         p.error("scenario tests require --mode pad")
+    if profile == "custom" and args.mode != "pad":
+        p.error("custom scripts require --mode pad")
     if args.spawn_index < 0:
         p.error("--spawn-index must be nonnegative")
     if profile == "maneuver" and (args.maneuver_duration <= 0 or args.warmup_limit_s <= 0):

@@ -52,6 +52,14 @@ def _controls(args, row, elapsed, phase):
         throttle = min(args.throttle, max(0.0, .2 * speed_error))
         return throttle, 0.0, max(-.15, min(.15, steer)), "drive"
 
+    if args.profile == "custom":
+        step = args.active_step
+        speed_error = step["speed_kmh"] / 3.6 - row["vx_mps"]
+        throttle = max(0.0, min(.65, 2.5 * speed_error))
+        brake = max(0.0, min(.4, -.25 * speed_error))
+        steer = max(-1.0, min(1.0, step["steer_deg"] / max(args.max_steer_deg, .1)))
+        return throttle, brake, -steer, step["name"]
+
     if elapsed < 2.0:
         return 0.0, 1.0, 0.0, "stabilize"
     scenario = getattr(args, "scenario", None) if args.profile == "scenario" else None
@@ -315,6 +323,8 @@ def run_simulation(args):
                       weather=api.get_weather(),
                       telemetry_limitation="Published 0.9.15 and 0.9.16 Python APIs do not document a per-wheel force/load/slip getter")
         write_json(out / "tham_so_carla.json", params)
+        if args.profile == "custom":
+            write_json(out / "kich_ban_da_chay.json", args.custom_script)
         write_json(out / "metadata.json", {"vehicle": vehicle.type_id, "actor_id": vehicle.id,
                     "versions": {"client": versions[0], "server": versions[1]}, "mode": args.mode,
                     "scenario": getattr(args, "scenario", getattr(args, "maneuver", None)),
@@ -328,6 +338,7 @@ def run_simulation(args):
             (out / "test_road.xodr").write_text(_road_xodr(), encoding="utf-8")
 
         columns = ["frame", "t_s", "t_sim_s", "X_m", "Y_m", "Z_m", "psi_rad", "roll_deg", "pitch_deg",
+                   "target_speed_kmh", "target_steer_deg",
                    "vx_mps", "vy_mps", "vz_mps", "speed_kmh", "r_radps", "ax_mps2", "ay_mps2",
                    "beta_rad", "angular_z_snapshot_raw", "r_yaw_difference_radps",
                    "steer_fl_deg", "steer_fr_deg", "steer_fl_deg_carla", "steer_fr_deg_carla",
@@ -344,7 +355,7 @@ def run_simulation(args):
         online_model = None if args.no_model else _OnlineBicycle(params["wheelbase_m"], float(physics.mass),
                             args.lf_fraction, params["bounding_box_extent_m"])
         plotter = _LivePlot(args.plot_window) if getattr(args, "plot", False) else None
-        path = out / ("states_realtime.csv" if args.profile in ("realtime", "scenario") else "states.csv")
+        path = out / ("states_realtime.csv" if args.profile in ("realtime", "scenario", "custom") else "states.csv")
         sim_start = None
         wall_start = time.monotonic()
         previous_frame = None
@@ -376,6 +387,17 @@ def run_simulation(args):
                 if sim_start is None:
                     sim_start = now_sim
                 elapsed = now_sim - sim_start
+                if args.profile == "custom":
+                    cursor = 0.0
+                    for step in args.custom_steps:
+                        if elapsed < cursor + step["duration_s"]:
+                            args.active_step = step
+                            phase = step["name"]
+                            break
+                        cursor += step["duration_s"]
+                    else:
+                        termination_reason = "duration_complete"
+                        break
                 yaw = math.radians(float(transform.rotation.yaw))
                 vx, raw_vy = _body(float(velocity.x), float(velocity.y), yaw)
                 ax, raw_ay = _body(float(acceleration.x), float(acceleration.y), yaw)
@@ -397,6 +419,8 @@ def run_simulation(args):
                        "X_m": float(transform.location.x), "Y_m": -float(transform.location.y),
                        "Z_m": float(transform.location.z), "psi_rad": psi,
                        "roll_deg": float(transform.rotation.roll), "pitch_deg": float(transform.rotation.pitch),
+                       "target_speed_kmh": (args.active_step["speed_kmh"] if args.profile == "custom" else float("nan")),
+                       "target_steer_deg": (args.active_step["steer_deg"] if args.profile == "custom" else float("nan")),
                        "vx_mps": vx, "vy_mps": vy, "vz_mps": float(velocity.z),
                        "speed_kmh": 3.6 * math.hypot(vx, vy), "r_radps": base["r_radps"],
                        "ax_mps2": ax, "ay_mps2": ay,
@@ -439,7 +463,9 @@ def run_simulation(args):
                 next_control = None
                 finish_maneuver = False
                 if args.mode == "pad":
-                    if args.profile in ("maneuver", "realtime", "scenario"):
+                    if args.profile == "custom":
+                        next_control = _controls(args, row, elapsed, phase)[:3]
+                    elif args.profile in ("maneuver", "realtime", "scenario"):
                         if phase == "warmup":
                             if elapsed >= args.stabilize_s:
                                 speed_stable = speed_stable + 1 if abs(args.speed_kmh / 3.6 - vx) < .14 else 0
@@ -527,7 +553,8 @@ def run_simulation(args):
                     if (args.mode == "pad" and not args.no_hud and
                             snapshot.frame - last_hud_frame >= max(1, round(1 / (args.log_hz * args.dt)))):
                         location = transform.location
-                        label = getattr(args, "scenario", None) or getattr(args, "maneuver", "basic")
+                        label = (getattr(args, "scenario", None) or
+                                 ("custom" if args.profile == "custom" else getattr(args, "maneuver", "basic")))
                         hud = (f"TEST: {label} | PHASE: {phase}\n"
                                f"TIME {elapsed:.1f} s   SPEED {row['speed_kmh']:.1f} km/h\n"
                                f"VX {vx:.2f}   VY {vy:.2f} m/s   YAW RATE {row['r_radps']:.3f} rad/s\n"

@@ -13,12 +13,13 @@ def main(argv=None):
     for name, description in (("basic", "Basic parameter collection"),
                               ("maneuver", "Repeatable maneuver test"),
                               ("realtime", "Realtime simulation or read-only attach"),
-                              ("scenario", "Run a named dynamics test on the common visible test map")):
+                              ("scenario", "Run a named dynamics test on the common visible test map"),
+                              ("custom", "Run a user-defined sequence of speed and steering commands")):
         sub.add_parser(name, add_help=False, help=description)
     sub.add_parser("fit", add_help=False, help="Fit model parameters")
     sub.add_parser("compare", add_help=False, help="Compare model replay with CARLA runs")
     args, rest = parser.parse_known_args(argv)
-    if args.command in ("basic", "maneuver", "realtime", "scenario"):
+    if args.command in ("basic", "maneuver", "realtime", "scenario", "custom"):
         try:
             return profiles.run(args.command, rest)
         except KeyboardInterrupt:

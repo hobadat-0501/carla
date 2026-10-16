@@ -1,0 +1,36 @@
+{
+  "map": "Town06",
+  "spawn_index": 0,
+  "steps": [
+    {
+      "name": "chay_thang_20",
+      "speed_kmh": 20,
+      "steer_deg": 0,
+      "duration_s": 10
+    },
+    {
+      "name": "re_phai_nhe_20",
+      "speed_kmh": 20,
+      "steer_deg": 3,
+      "duration_s": 5
+    },
+    {
+      "name": "tang_toc_30",
+      "speed_kmh": 30,
+      "steer_deg": 0,
+      "duration_s": 10
+    },
+    {
+      "name": "re_trai_nhe_30",
+      "speed_kmh": 30,
+      "steer_deg": -3,
+      "duration_s": 5
+    },
+    {
+      "name": "giu_toc_do_25",
+      "speed_kmh": 25,
+      "steer_deg": 0,
+      "duration_s": 10
+    }
+  ]
+}
