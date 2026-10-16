@@ -31,12 +31,12 @@ Select a new output directory for every run.
 
 ## Visible dynamics tests
 
-`scenario` runs one selected test on the shared OpenDRIVE flat test map. The CARLA window shows a live HUD with phase, speed, body velocities, accelerations, yaw rate, steering, throttle, and brake; a short trajectory trail is drawn behind the vehicle.
+`scenario` defaults to the built-in CARLA `Town03` city map (or accepts another built-in map with `--map`) and uses the selected vehicle spawn point. It reloads that world at each launch, which clears actors and old debug drawings. The CARLA window shows a separated live HUD with phase, speed, body velocities, accelerations, yaw rate, steering, throttle, and brake; a short trajectory trail is drawn behind the vehicle.
 
 Run the complete sequence in one CARLA world and one CSV. Its `phase` column and HUD label move through straight, speed step, coastdown, recovery, steering ramp, J-turn, double pulse, sine-with-dwell, constant radius, and braking:
 
 ```bash
-python carla_sim.py scenario --scenario suite --speed-kmh 25 --step-speed-kmh 35 --out ket_qua/suite_01
+python carla_sim.py scenario --scenario suite --map Town03 --spawn-index 0 --speed-kmh 25 --step-speed-kmh 35 --out ket_qua/city_suite_01
 ```
 
 Individual cases can also be run separately on the same map:
@@ -53,7 +53,7 @@ python carla_sim.py scenario --scenario constant_radius --speed-kmh 25 --radius-
 python carla_sim.py scenario --scenario braking --speed-kmh 25 --brake-pulse 1 --out ket_qua/braking_01
 ```
 
-The scenario command uses a broad flat pad so steering tests remain on the generated surface. `--duration` is the safety time limit; most individual scenarios finish after `--maneuver-duration` once warmup is complete. `--repeat-s` repeats the maneuver after a short straight segment. These are simulation experiments, not certification tests.
+The suite contains ten phases: straight, speed step, coastdown, recovery, steering ramp, J-turn, double pulse, sine-with-dwell, constant radius, and braking. They run sequentially in one loaded map and one CSV. `--duration` is the safety time limit; most individual scenarios finish after `--maneuver-duration` once warmup is complete. `--repeat-s` repeats the maneuver after a short straight segment. These are simulation experiments, not certification tests.
 
 ## API and telemetry limits
 

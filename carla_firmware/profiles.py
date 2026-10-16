@@ -15,6 +15,8 @@ ROOT = Path(__file__).resolve().parent.parent
 def parser(profile):
     p = argparse.ArgumentParser(description="CARLA 0.9.15 real-time simulation firmware")
     p.add_argument("--mode", choices=("pad", "attach"), default="pad")
+    p.add_argument("--map", dest="map_name", help="load a built-in CARLA map, for example Town03")
+    p.add_argument("--spawn-index", type=int, default=0, help="vehicle spawn point index on --map")
     p.add_argument("--host", default="127.0.0.1")
     p.add_argument("--port", type=int, default=2000)
     p.add_argument("--timeout", type=float, default=30 if profile in ("realtime", "scenario") else 90)
@@ -94,6 +96,8 @@ def parser(profile):
 def run(profile, argv=None):
     p = parser(profile)
     args = p.parse_args(argv)
+    if profile == "scenario" and args.map_name is None:
+        args.map_name = "Town03"
     if profile == "scenario" and args.maneuver_duration is None:
         args.maneuver_duration = 3.0 if args.scenario == "constant_radius" else 6.0
     args.profile = profile
@@ -141,6 +145,8 @@ def run(profile, argv=None):
         p.error("Invalid scenario parameter")
     if profile == "scenario" and args.mode != "pad":
         p.error("scenario tests require --mode pad")
+    if args.spawn_index < 0:
+        p.error("--spawn-index must be nonnegative")
     if profile == "maneuver" and (args.maneuver_duration <= 0 or args.warmup_limit_s <= 0):
         p.error("Maneuver and warmup durations must be positive")
     if profile == "realtime" and not (.2 <= args.reset_s <= 10 and args.repeat_s >= 0

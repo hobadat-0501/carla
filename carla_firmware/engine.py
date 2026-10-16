@@ -240,16 +240,28 @@ def run_simulation(args):
     collision_queue = queue.SimpleQueue()
     try:
         if args.mode == "pad":
-            world = client.generate_opendrive_world(_road_xodr(), carla.OpendriveGenerationParameters(
-                vertex_distance=2.0, max_road_length=50.0, wall_height=0.0, additional_width=.6,
-                smooth_junctions=True, enable_mesh_visibility=True))
+            map_name = getattr(args, "map_name", None)
+            if map_name:
+                world = client.load_world(map_name)
+            else:
+                world = client.generate_opendrive_world(_road_xodr(), carla.OpendriveGenerationParameters(
+                    vertex_distance=2.0, max_road_length=50.0, wall_height=0.0, additional_width=.6,
+                    smooth_junctions=True, enable_mesh_visibility=True))
             old_settings = configure_world(world, args.dt)
             world.set_weather(carla.WeatherParameters.WetNoon if args.rain_visual else carla.WeatherParameters.ClearNoon)
-            waypoint = world.get_map().get_waypoint_xodr(1, -1, 100.0)
-            if waypoint is None:
-                raise RuntimeError("Could not locate spawn waypoint on generated test road")
-            spawn = waypoint.transform
-            spawn.location.z += .5
+            if map_name:
+                spawn_points = world.get_map().get_spawn_points()
+                if not spawn_points:
+                    raise RuntimeError(f"Map {map_name!r} has no vehicle spawn points")
+                if args.spawn_index >= len(spawn_points):
+                    raise ValueError(f"--spawn-index {args.spawn_index} out of range; map has {len(spawn_points)} spawn points")
+                spawn = spawn_points[args.spawn_index]
+            else:
+                waypoint = world.get_map().get_waypoint_xodr(1, -1, 100.0)
+                if waypoint is None:
+                    raise RuntimeError("Could not locate spawn waypoint on generated test road")
+                spawn = waypoint.transform
+                spawn.location.z += .5
             blueprint = world.get_blueprint_library().find(args.vehicle)
             blueprint.set_attribute("role_name", "carla_firmware_ego")
             vehicle = world.try_spawn_actor(blueprint, spawn)
@@ -312,7 +324,7 @@ def run_simulation(args):
                     "mass_scale": getattr(args, "mass_scale", 1.0),
                     "tire_friction_requested": args.tire_friction,
                     "coordinate_convention": "body X forward, Y left; SI units"})
-        if args.mode == "pad":
+        if args.mode == "pad" and not getattr(args, "map_name", None):
             (out / "test_road.xodr").write_text(_road_xodr(), encoding="utf-8")
 
         columns = ["frame", "t_s", "t_sim_s", "X_m", "Y_m", "Z_m", "psi_rad", "roll_deg", "pitch_deg",
@@ -516,19 +528,19 @@ def run_simulation(args):
                             snapshot.frame - last_hud_frame >= max(1, round(1 / (args.log_hz * args.dt)))):
                         location = transform.location
                         label = getattr(args, "scenario", None) or getattr(args, "maneuver", "basic")
-                        hud = (f"{label} | {phase}\n"
-                               f"t={elapsed:.1f}s  v={row['speed_kmh']:.1f} km/h\n"
-                               f"vx={vx:.2f} vy={vy:.2f} m/s  r={row['r_radps']:.3f} rad/s\n"
-                               f"ax={ax:.2f} ay={ay:.2f} m/s2  beta={row['beta_rad']:.3f} rad\n"
-                               f"steer={row['steer_applied_norm']:.2f} throttle={row['throttle_applied']:.2f} brake={row['brake_applied']:.2f}")
+                        hud = (f"TEST: {label} | PHASE: {phase}\n"
+                               f"TIME {elapsed:.1f} s   SPEED {row['speed_kmh']:.1f} km/h\n"
+                               f"VX {vx:.2f}   VY {vy:.2f} m/s   YAW RATE {row['r_radps']:.3f} rad/s\n"
+                               f"AX {ax:.2f}   AY {ay:.2f} m/s2   BETA {row['beta_rad']:.3f} rad\n"
+                               f"STEER {row['steer_applied_norm']:.2f}   THROTTLE {row['throttle_applied']:.2f}   BRAKE {row['brake_applied']:.2f}")
                         world.debug.draw_string(
                             carla.Location(x=location.x, y=location.y, z=location.z + 4.0), hud,
                             draw_shadow=True, color=carla.Color(80, 255, 100),
-                            life_time=max(.35, 2.0 / args.log_hz))
+                            life_time=max(.1, .95 / args.log_hz))
                         if last_path_point is not None:
                             path_location = carla.Location(x=location.x, y=location.y, z=location.z + .25)
                             world.debug.draw_line(last_path_point, path_location, thickness=.08,
-                                color=carla.Color(255, 210, 30), life_time=30.0)
+                                color=carla.Color(255, 210, 30), life_time=2.0)
                         else:
                             path_location = carla.Location(x=location.x, y=location.y, z=location.z + .25)
                         last_path_point = path_location
