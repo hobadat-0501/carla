@@ -1,4 +1,4 @@
-# CPython 3.10, 64-bit. CARLA server must be 0.9.15.
+# Ubuntu x86_64, CPython 3.10, CARLA Python client/server 0.9.15
 carla==0.9.15
 numpy==1.26.4
 pandas==2.2.3
