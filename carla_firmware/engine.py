@@ -49,7 +49,9 @@ def _controls(args, row, elapsed, phase):
         return 0.0, 1.0, 0.0, "stabilize"
     target = args.speed_kmh / 3.6
     error = target - row["vx_mps"]
-    throttle = max(0.0, min(.65, .28 * error))
+    # The previous low proportional gain left a steady speed error of ~4 km/h
+    # against CARLA's rolling/drive resistance, preventing maneuver warmup.
+    throttle = max(0.0, min(.65, 2.5 * error))
     brake = max(0.0, min(.4, -.25 * error))
     if phase == "warmup":
         return throttle, brake, 0.0, "warmup"
