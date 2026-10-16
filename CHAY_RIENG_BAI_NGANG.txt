@@ -1,0 +1,99 @@
+V4.5 — SỬA CÁCH KHỞI TẠO BÀI NGANG, GIỮ NHẬT KÝ CHẨN ĐOÁN
+
+Dữ liệu trước dừng ở thông báo tạo lại đường cho train_ngang, chưa có mẫu
+ngang. Chưa đủ căn cứ xác định nguyên nhân ngắt hoặc kết luận về mô hình.
+
+THAY ĐỔI CỤ THỂ
+Bản cũ luôn gọi generate_opendrive_world khi bắt đầu bài ngang, dù đường
+thử từ bài dọc vẫn đang mở. Bản này mặc định dùng --world-mode auto:
+- Đọc OpenDRIVE từ CARLA và so khớp toàn bộ nội dung với đường thử.
+- Nếu trùng: bỏ qua tạo lại bản đồ; dọn xe có role_name=model_validation_ego
+  và cảm biến gắn với xe đó, rồi tạo xe mới cho bài ngang.
+- Nếu có xe/người khác trên đường đang dùng lại: báo lỗi, không xóa họ.
+- Nếu khác đường: tạo đường thử một lần như trước.
+Đây là thay đổi thực thi để tránh gọi lại bước tạo bản đồ không cần thiết.
+Chưa có log mới từ máy cô nên chưa thể khẳng định đã xử lý mọi nguyên nhân ngắt.
+
+TRÊN MÁY LINUX CỦA CÔ
+1. Giải nén cập nhật mã vào thư mục CARLA_Buoc1_0915 đang dùng. Giữ nguyên
+   dữ liệu ket_qua_v4. Mở CARLA server 0.9.15 và đợi hiện bản đồ.
+2. Đóng manual_control, automatic_control, generate_traffic và các client
+   khác đang tick. Nếu cần tạo bản đồ, các actor thế giới cũ sẽ bị xóa.
+3. Mở Terminal tại thư mục mã rồi chạy:
+
+   /home/vth/carla-env/bin/python -u chay_rieng_bai_ngang.py
+
+Nếu môi trường Python nằm nơi khác, thay phần /home/vth/carla-env/bin/python
+bằng đường dẫn Python 3.10 có carla==0.9.15 của cô.
+Máy chủ khác/cổng khác: thêm --host DIA_CHI_IP --port CONG.
+Mặc định RPC timeout 90 giây; chỉ khi cần quan sát chờ lâu hơn, thêm --timeout 180.
+Không cần chạy quy trình baseline hoặc chay_tiep_kiem_chung cùng lúc.
+
+Nếu vừa chạy xong bài dọc và đường thử vẫn mở, lệnh mặc định sẽ dùng lại
+đường đó. Muốn bắt buộc bỏ qua tạo bản đồ, thêm --world-mode reuse; nếu
+không đúng đường thử, chương trình sẽ báo lỗi thay vì âm thầm dùng bản đồ khác.
+Muốn tạo thế giới mới như quy trình gốc, thêm --world-mode create.
+
+CẤU HÌNH GIỮ ĐÚNG BÀI TRAIN_NGANG BAN ĐẦU
+- Mục tiêu tốc độ 2 m/s, lệnh lái chuẩn hóa 0.04, dt=0.02 s, thời gian thu 18 s.
+- Ổn định xe/phanh 2 giây mô phỏng trước khi bắt đầu đồng hồ bài thử.
+- 0–5 s tăng tốc, 5–5.5 s tăng dần lái, 5.5–11 s giữ lái, 11–18 s phanh.
+- Camera bám xe, pacing theo thời gian thực và giữ xe đứng yên sau khi thu.
+- Việc tạo bản đồ có thời gian riêng, không tính vào 18 giây thu dữ liệu.
+
+QUAN SÁT TERMINAL
+[BUOC connecting]             kiểm tra phiên bản/kết nối
+[BUOC checking_current_road]  đọc OpenDRIVE đang mở
+[BUOC reusing_test_road]      khớp đường thử; KHÔNG tạo lại thế giới
+[BUOC removing_previous_test_vehicle] dọn xe thử trước đó
+[BUOC creating_world]         đang chờ tạo bản đồ; chưa có xe/mẫu
+[BUOC configuring_world]      bản đồ đã được trả về; cài đặt mô phỏng
+[BUOC locating_spawn]         đọc vị trí tạo xe
+[BUOC loading_vehicle_blueprint] tìm mẫu xe
+[BUOC spawning_vehicle]       tạo actor xe
+[BUOC configuring_vehicle]    cấu hình vật lý xe
+[BUOC spawning_collision_sensor] tạo cảm biến va chạm
+[BUOC initial_settling]       ổn định vật lý
+[BUOC reading_geometry]       đọc hình học/lưu metadata
+[BUOC acquiring]              thu dữ liệu; xem t_sim_s, rows, command_phase
+[BUOC cleanup]                kết thúc lượt, gỡ cảm biến, phục hồi cài đặt
+[BUOC plotting]               vẽ từ dữ liệu đã thu
+
+Cứ 5 giây thực sẽ in DANG CHO cùng tên giai đoạn và mốc tiến độ gần nhất.
+Nếu đang thu bình thường, mốc t_sim_s/rows tiếp tục tăng mỗi giây mô phỏng.
+Nếu đứng lâu ở creating_world, đây là đang chờ generate_opendrive_world trả
+về; chưa thể khẳng định lỗi nằm ở GPU. Nhật ký ngăn xếp Python được chụp
+mỗi 15 giây thực, kể cả khi đang chờ RPC; ảnh ngăn xếp không tự chứng minh treo.
+
+KẾT QUẢ
+Tự tạo thư mục mới runs/ngang_quan_sat_NGAY_GIO và ZIP cùng tên bên cạnh.
+- console.log: toàn bộ thông báo và lỗi được bắt.
+- python_stacks.log: vị trí Python đang thực thi mỗi 15 giây thực.
+- thu_ngang/stage_trace.jsonl: lịch sử từng bước/tiến độ; flush ngay.
+- thu_ngang/stage_progress.json: bước và mốc gần nhất, cập nhật nguyên tử.
+- thu_ngang/run_status.json: kết quả, số mẫu, failure_phase khi có ngoại lệ.
+- thu_ngang/states.csv, metadata.json: dữ liệu nếu đã tới bước thu.
+- world_setup trong metadata/run_status: chế độ đường, có dùng lại hay không,
+  băm OpenDRIVE và mã các actor thử cũ được dọn.
+- thu_ngang/error_traceback.txt: chi tiết ngoại lệ nếu phát sinh.
+- thu_ngang/responses.png: chỉ được tạo khi thu hoàn thành và vẽ thành công.
+- chan_doan_status.json: mã thoát toàn lệnh, model_validated luôn false.
+
+Chạy đủ mặc định: result=duration_complete, 901 mẫu từ 0 tới khoảng 18 s,
+không cutoff/va chạm. Đây là hoàn thành thu dữ liệu, chưa là kiểm chứng 3-DOF.
+Nếu cần dừng bằng Ctrl+C, chương trình sẽ cố ghi trạng thái, dọn dẹp và tạo
+ZIP. Dọn dẹp có thể phải chờ RPC timeout. Không bảo đảm ZIP nếu tiến trình
+bị kill -9, máy tắt hoặc lỗi native làm Python thoát; khi đó giữ nguyên thư
+mục kết quả đã có và gửi thư mục này nén lại.
+
+Gửi lại runs/ngang_quan_sat_*.zip để xác định bước ngắt và phân tích vy, r.
+Mã chẩn đoán đã kiểm tra phần mềm; chưa được chạy thu ngang thật trên server/GPU
+trong môi trường hỗ trợ này.
+
+GIỚI HẠN CỦA DÙNG LẠI THẾ GIỚI
+Chỉ dùng lại khi OpenDRIVE trùng khớp chính xác; luôn tạo actor xe mới.
+Không tuyên bố tái lập vật lý tuyệt đối khi không reload thế giới. Các lượt
+lặp để khảo sát tính tái lập cần thiết kế riêng và dùng --world-mode create.
+Tài liệu CARLA 0.9.15 yêu cầu reload thế giới cùng các điều kiện đồng bộ để
+bảo đảm tính xác định; bản dùng lại phục vụ thu hồi/chẩn đoán bài bị ngắt.
+https://carla.readthedocs.io/en/0.9.15/adv_synchrony_timestep/

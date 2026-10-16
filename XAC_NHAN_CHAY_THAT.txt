@@ -1,0 +1,83 @@
+XÁC NHẬN CHẠY TRÊN CARLA SERVER / GPU — V4.1, CARLA 0.9.15
+
+TRẠNG THÁI HIỆN TẠI
+Môi trường thực thi hiện tại không có GPU được cấp, không có chương trình
+CARLA server và không có server lắng nghe cổng 2000. Người dùng đã cung cấp các lượt thử dọc hoàn thành trên CARLA 0.9.15.
+Chưa có bằng chứng gắn bộ dựng hình GPU với các lượt đó. Các kiểm tra phần mềm đã qua không thay thế
+bằng chứng chạy trên máy có server.
+
+CÁCH THU KẾT QUẢ TRÊN MÁY WINDOWS CỦA CÔ
+1. Giải nén bộ mã cập nhật thành thư mục CARLA_Buoc1_0915 riêng.
+2. Nếu chưa cài môi trường của bản này, chạy 00_CAI_DAT_WINDOWS.bat.
+3. Đóng CARLA server cũ và các client đang tick. Bước 05 sẽ mở server riêng
+   để thu nhật ký mới, giúp gắn bộ dựng hình với đúng lần chạy.
+4. Nháy đúp 05_XAC_NHAN_SERVER_GPU_WINDOWS.bat.
+   - Nếu có C:\CARLA_0.9.15\CarlaUE4.exe, chương trình dùng đường dẫn đó.
+   - Nếu CARLA ở chỗ khác, nhập đường dẫn đầy đủ tới CarlaUE4.exe.
+   - Có thể gọi trong CMD:
+     05_XAC_NHAN_SERVER_GPU_WINDOWS.bat "D:\CARLA_0.9.15\CarlaUE4.exe"
+5. Đợi server mở, bài J-turn 30 km/h kết thúc và camera thu xong.
+6. Mở ket_qua_v4\xac_nhan_NGAY_GIO\KET_QUA_XAC_NHAN.txt.
+7. Gửi lại tệp xac_nhan_NGAY_GIO_MINH_CHUNG.zip để kiểm tra kết quả.
+
+CHƯƠNG TRÌNH THỰC HIỆN
+- Dùng CPython 3.10 x64 / carla==0.9.15.
+- Mở server bằng đường dẫn cô chọn, ghi nhật ký riêng cho lần chạy.
+- Kiểm tra kết nối và phiên bản; tạo bãi thử; chạy J-turn 30 km/h.
+- Kiểm tra CSV: thời gian, frame, tốc độ vào bài, chuyển động và góc bánh.
+- Thu camera RGB thật trong một phép thử riêng sau bài J-turn.
+- Giữ nguyên frame ID của camera, kể cả khi ảnh đến trễ.
+- Đối chiếu nhật ký bộ dựng hình để xác định adapter phần cứng được chọn.
+- Xuất báo cáo, ảnh camera, đồ thị, CSV, log và tệp ZIP minh chứng.
+- Giữ server đã mở để cô xem; đóng cửa sổ CARLA khi không dùng nữa.
+
+CÁCH ĐỌC BA KẾT QUẢ
+MO PHONG SERVER: DAT
+  Kết nối đúng bản 0.9.15; bài J-turn hoàn thành và các kiểm tra dữ liệu đạt.
+CAMERA RENDER: DAT
+  Có ít nhất ba frame RGB hợp lệ, ảnh có biến thiên không gian và rendering bật.
+GPU PHAN CUNG: DAT
+  Có kết quả camera ở trên, cùng nhật ký mới của server do bước kiểm tra mở,
+  trong đó adapter được chọn được nhận diện là GPU phần cứng.
+
+Chỉ báo server_and_gpu_confirmed khi đủ cả ba. Không lấy việc cài driver,
+liệt kê GPU hoặc chỉ có CSV trạng thái làm bằng chứng GPU đang dựng hình.
+Nếu server/camera đạt nhưng không đọc được adapter từ nhật ký, kết quả là
+server_and_camera_confirmed_gpu_unverified; cần kiểm tra nhật ký thêm.
+Bản server đóng gói có thể không xuất đủ dòng RHI; trường hợp này không tự
+kết luận GPU hỏng hoặc máy không có GPU.
+
+CÁC TỆP TRONG THƯ MỤC KẾT QUẢ
+- xac_nhan.json: ba trạng thái và các chẩn đoán.
+- KET_QUA_XAC_NHAN.txt: kết quả dễ đọc.
+- smoke\jturn_30_dry\states.csv và run_status.json: bài J-turn.
+- smoke\jturn_30_dry\responses.png: đáp ứng của xe CARLA.
+- camera\camera_*.png và render_report.json: frame thật nhận từ camera.
+- renderer_excerpt.txt: các dòng liên quan tới adapter trong nhật ký.
+- logs: nhật ký lệnh đã chạy.
+- file_hashes.json: SHA-256 các tệp được đóng gói.
+- server_engine.log / server_console.log: nhật ký đầy đủ, giữ tại máy cô.
+  ZIP minh chứng chỉ lấy phần trích bộ dựng hình, không lấy hai log đầy đủ.
+
+MÃ THOÁT
+0: đủ bằng chứng server + camera + adapter phần cứng theo các kiểm tra trên.
+2: server/camera đạt nhưng chưa đủ bằng chứng gắn với GPU phần cứng.
+1: quy trình thất bại; đọc thông báo và ZIP minh chứng lỗi.
+130: người chạy ngắt bằng Ctrl+C.
+
+ĐÃ CÓ SERVER ĐANG CHẠY, CHỈ MUỐN KIỂM TRA KẾT NỐI / CAMERA
+Có thể giữ server đó và chạy:
+  .venv_0915\Scripts\python.exe xac_nhan_server_gpu.py
+Cách này không tự nhận là đã xác nhận adapter GPU vì không tạo được nhật ký
+khởi động riêng gắn với server đang chạy. Dùng bước 05 để thu đủ minh chứng.
+
+PHẠM VI KẾT LUẬN
+Một lần kiểm tra đạt xác nhận bộ mã chạy được trong cấu hình đã ghi, ở một
+bài J-turn 30 km/h và một phép thử camera riêng. Chưa xác nhận toàn bộ 72 lượt,
+chưa xác nhận mô hình 3-DOF đủ chính xác, chưa xác nhận thời gian thực hoặc ISO.
+Các ngưỡng kiểm tra trong mã là chẩn đoán phần mềm, không phải tiêu chuẩn ISO.
+
+Nguồn đối chiếu:
+https://carla.readthedocs.io/en/0.9.15/adv_rendering_options/
+https://carla.readthedocs.io/en/0.9.15/adv_synchrony_timestep/
+https://dev.epicgames.com/documentation/en-us/unreal-engine/command-line-arguments?application_version=4.27

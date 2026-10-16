@@ -1,0 +1,6 @@
+# CPython 3.10, 64-bit. CARLA server must be 0.9.15.
+carla==0.9.15
+numpy==1.26.4
+pandas==2.2.3
+matplotlib==3.10.8
+scipy==1.15.3

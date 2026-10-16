@@ -1,0 +1,61 @@
+MÔ HÌNH VÀ ĐƠN VỊ CỦA VÍ DỤ
+
+Hệ trục thân xe x về trước, y sang trái, hướng quay dương sang trái.
+X,Y: m; psi,delta,alpha: rad; vx,vy: m/s; r: rad/s; m: kg; Iz: kg m^2.
+lf+lr=L. Ký hiệu Cf,Cr là độ cứng ngang tương đương cả cầu, N/rad.
+
+Mô hình tác động dọc quy đổi:
+a_eff = kT*throttle - kB*brake - c0*tanh(vx/0.2) - c1*vx.
+kT,kB,c0: m/s^2 (lệnh throttle/brake vô thứ nguyên); c1: 1/s.
+Ở vận tốc bằng không, chặn gia tốc âm để không tạo chuyển động lùi.
+Đây là mô hình cục bộ đơn giản, không đồng nhất với lực cản vật lý từng phần.
+
+Mô hình động học tại điểm quy chiếu giả thiết trùng trọng tâm:
+beta = atan((lr/L)*tan(delta))
+dX/dt = v*cos(psi+beta)
+dY/dt = v*sin(psi+beta)
+dpsi/dt = v*cos(beta)*tan(delta)/L
+dv/dt = a_eff(v, throttle, brake).
+vx=v*cos(beta), vy=v*sin(beta).
+
+Mô hình động lực học phẳng trong miền chuyển động về trước:
+alpha_f = delta - atan2(vy+lf*r, vx)
+alpha_r = -atan2(vy-lr*r, vx)
+Fyf = Cf*alpha_f
+Fyr = Cr*alpha_r
+d(vx)/dt = a_eff - (Fyf/m)*sin(delta) + r*vy
+d(vy)/dt = (Fyf*cos(delta)+Fyr)/m - r*vx
+d(r)/dt = (lf*Fyf*cos(delta)-lr*Fyr)/Iz
+dX/dt = vx*cos(psi)-vy*sin(psi)
+dY/dt = vx*sin(psi)+vy*cos(psi)
+dpsi/dt = r.
+
+Tổng tác động dọc được quy đổi dọc thân xe. Bỏ qua chi tiết lực kéo/phanh
+cầu trước và mômen quay do phân bố lực dọc. Luật lốp tuyến tính theo góc
+trượt cần giới hạn miền áp dụng, đặc biệt khi gần bão hòa bám.
+
+Mã xử lý vx thấp bằng mẫu số có sàn và tiếp nối động học dưới 0.8 m/s.
+Đây là thay đổi để xử lý số; không dùng miền đó để tuyên bố xác thực
+động lực học lốp. Đọc mã dynamic_rhs để biết chính xác quy tắc tiếp nối.
+
+Tích phân RK4 với bước nhỏ mặc định tối đa 0.001 s. Khi kiểm tra sai số
+tích phân, chạy lại compare với --max-step 0.0005 vào một thư mục mới,
+đối chiếu kết quả. Nhất quán số không đồng nghĩa mô hình vật lý đúng.
+
+Tài liệu nền và công cụ:
+https://carla.readthedocs.io/en/0.9.15/python_api/
+https://docs.scipy.org/doc/scipy/reference/generated/scipy.optimize.lsq_linear.html
+https://docs.scipy.org/doc/scipy/reference/generated/scipy.optimize.least_squares.html
+https://commonroad.in.tum.de/
+
+Các mô hình trong gói được lập trình riêng theo các giả thiết nêu trên;
+không sao chép nguyên mô hình hoặc bộ tham số CommonRoad/CARLA.
+
+MÔ HÌNH BỔ SUNG CHO BÀI THAO TÁC
+Mô hình friction_circle giới hạn cặp lực dọc/ngang tại mỗi cầu theo
+sqrt(Fx_i^2 + Fy_i^2) <= mu_nominal * Fz_i, tải trọng cầu tĩnh.
+Các tỷ lệ lực kéo/phanh cầu trước do người dùng khai báo, không được nhận dạng
+trong quy trình nền. Chưa mô tả chuyển tải trọng, lắc ngang hay trễ lốp.
+mu_nominal là giả thiết mô hình; tire_friction CARLA là tham số cấu hình riêng.
+Chế độ --condition-ax dùng gia tốc dọc tham chiếu làm đầu vào biết trước,
+chỉ đánh giá ngang; không chứng minh mô hình kéo/phanh hoặc lực dọc.

@@ -1,0 +1,11 @@
+KET QUA DOI CHIEU NGOAI TUYEN — CHI PHAN DOC
+Du lieu la cac luot CARLA do nguoi dung cung cap, khong phai du lieu nhan tao.
+Mo hinh 3-DOF da duoc kiem chung: CHUA DU BANG CHUNG.
+So mau phanh trong mien nhan dang: 2
+Tham so cham bien gia thiet: ['rolling_accel']
+train/whole_run: RMSE vx=0.951565 m/s; max_abs=2.636261 m/s
+train/moving_domain: RMSE vx=0.577933 m/s; max_abs=1.760507 m/s
+independent_test/whole_run: RMSE vx=0.913335 m/s; max_abs=2.841841 m/s
+independent_test/moving_domain: RMSE vx=0.761079 m/s; max_abs=1.885923 m/s
+Can them du lieu ngang/phoi hop, kiem thu doc lap va tieu chi chap nhan.
+Bao cao nay khong phai tep tham so day du de nap vao bo doi chieu 3-DOF.

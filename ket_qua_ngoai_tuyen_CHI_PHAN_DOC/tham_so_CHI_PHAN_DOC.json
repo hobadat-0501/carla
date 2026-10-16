@@ -1,0 +1,85 @@
+{
+  "scope": "Longitudinal submodel only; lateral/yaw parameters are not identified.",
+  "model_3dof_validated": false,
+  "longitudinal": {
+    "traction_gain": 11.312188046881843,
+    "brake_gain": 2.18975564838987,
+    "rolling_accel": 5.780681814065073e-18,
+    "linear_drag": 0.5374266129276372
+  },
+  "vehicle_id": "vehicle.tesla.model3",
+  "mass_kg": 1845.0,
+  "wheelbase_m": 3.0046484375,
+  "training_brake_samples_vx_gt_0_8": 2,
+  "parameters_at_assumed_bounds": [
+    "rolling_accel"
+  ],
+  "design": {
+    "rank": 4,
+    "columns": 4,
+    "column_normalized_condition": 9.828176280220827,
+    "singular_values": [
+      1.6364809707301569,
+      1.0008130720468014,
+      0.5409047426784696,
+      0.16650911868802856
+    ],
+    "interpretation": "Local sensitivity diagnostic only; not physical parameter verification."
+  },
+  "metrics": [
+    {
+      "run": "train",
+      "domain": "whole_run",
+      "samples": 901,
+      "rmse": 0.9515652253070196,
+      "max_abs": 2.6362610725031637,
+      "observed_vmax_mps": 2.89838624002793,
+      "predicted_vmax_mps": 3.6073382205462288
+    },
+    {
+      "run": "train",
+      "domain": "moving_domain",
+      "samples": 322,
+      "rmse": 0.5779328048533874,
+      "max_abs": 1.7605066538089984,
+      "observed_vmax_mps": 2.89838624002793,
+      "predicted_vmax_mps": 3.6073382205462288
+    },
+    {
+      "run": "independent_test",
+      "domain": "whole_run",
+      "samples": 901,
+      "rmse": 0.9133348118482513,
+      "max_abs": 2.84184087067597,
+      "observed_vmax_mps": 4.630369663307642,
+      "predicted_vmax_mps": 5.411007330819354
+    },
+    {
+      "run": "independent_test",
+      "domain": "moving_domain",
+      "samples": 442,
+      "rmse": 0.7610789427619027,
+      "max_abs": 1.8859228580150584,
+      "observed_vmax_mps": 4.630369663307642,
+      "predicted_vmax_mps": 5.411007330819354
+    }
+  ],
+  "sources": [
+    {
+      "role": "train",
+      "state_sha256": "7823c2859106f64b509c857762d8a3e104a0d02fbb40e79761bd2c4c28353b77",
+      "case": "doc",
+      "data_source": "CARLA simulator state; not a physical vehicle experiment",
+      "drive_requested": 0.12
+    },
+    {
+      "role": "independent_test",
+      "state_sha256": "d037244ae4a492c3d42a66b3a012535dc456ec97f0fbfe63d1aeafaa3829a358",
+      "case": "doc",
+      "data_source": "CARLA simulator state; not a physical vehicle experiment",
+      "drive_requested": 0.18
+    }
+  ],
+  "protocol": "Fit once on training moving samples; initialize once per run and replay throttle_next/brake_next. No resets or test-data tuning.",
+  "acceptance": "No scientific acceptance criteria specified; errors must be reviewed before any validation claim."
+}
