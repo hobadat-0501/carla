@@ -1,0 +1,197 @@
+{
+  "mass": 1845.0,
+  "drag_coefficient": 0.15000000596046448,
+  "center_of_mass": [
+    0.44999998807907104,
+    0.0,
+    -0.29999998211860657
+  ],
+  "max_rpm": 15000.0,
+  "moi": 1.0,
+  "damping_rate_full_throttle": 0.15000000596046448,
+  "damping_rate_zero_throttle_clutch_engaged": 2.0,
+  "damping_rate_zero_throttle_clutch_disengaged": 0.3499999940395355,
+  "final_ratio": 9.0,
+  "gear_switch_time": 0.0,
+  "clutch_strength": 10.0,
+  "use_gear_autobox": true,
+  "use_sweep_wheel_collision": false,
+  "torque_curve": [
+    [
+      -9.310943603515625,
+      743.0
+    ],
+    [
+      9000.0,
+      743.0
+    ],
+    [
+      9500.0,
+      660.0
+    ],
+    [
+      10400.0,
+      605.0
+    ],
+    [
+      12500.0,
+      528.0
+    ],
+    [
+      15000.0,
+      502.0
+    ]
+  ],
+  "steering_curve": [
+    [
+      0.0,
+      1.0
+    ],
+    [
+      20.0,
+      0.8999999761581421
+    ],
+    [
+      60.0,
+      0.800000011920929
+    ],
+    [
+      120.0,
+      0.699999988079071
+    ]
+  ],
+  "forward_gears": [
+    {
+      "ratio": 1.0,
+      "down_ratio": 0.0,
+      "up_ratio": 0.0
+    }
+  ],
+  "wheels": [
+    {
+      "tire_friction": 3.5,
+      "damping_rate": 0.25,
+      "max_steer_angle": 69.99999237060547,
+      "radius": 37.0,
+      "max_brake_torque": 700.0,
+      "max_handbrake_torque": 0.0,
+      "lat_stiff_max_load": 3.0,
+      "lat_stiff_value": 20.0,
+      "long_stiff_value": 3000.0,
+      "position": [
+        -109838.1796875,
+        116.65853881835938,
+        78.94796752929688
+      ],
+      "wheel": "FL"
+    },
+    {
+      "tire_friction": 3.5,
+      "damping_rate": 0.25,
+      "max_steer_angle": 69.99999237060547,
+      "radius": 37.0,
+      "max_brake_torque": 700.0,
+      "max_handbrake_torque": 0.0,
+      "lat_stiff_max_load": 3.0,
+      "lat_stiff_value": 20.0,
+      "long_stiff_value": 3000.0,
+      "position": [
+        -109838.1796875,
+        283.3414611816406,
+        78.9479751586914
+      ],
+      "wheel": "FR"
+    },
+    {
+      "tire_friction": 3.5,
+      "damping_rate": 0.25,
+      "max_steer_angle": 0.0,
+      "radius": 37.0,
+      "max_brake_torque": 700.0,
+      "max_handbrake_torque": 1400.0,
+      "lat_stiff_max_load": 3.0,
+      "lat_stiff_value": 20.0,
+      "long_stiff_value": 3000.0,
+      "position": [
+        -110138.640625,
+        116.65853881835938,
+        78.94847869873047
+      ],
+      "wheel": "RL"
+    },
+    {
+      "tire_friction": 3.5,
+      "damping_rate": 0.25,
+      "max_steer_angle": 0.0,
+      "radius": 37.0,
+      "max_brake_torque": 700.0,
+      "max_handbrake_torque": 1400.0,
+      "lat_stiff_max_load": 3.0,
+      "lat_stiff_value": 20.0,
+      "long_stiff_value": 3000.0,
+      "position": [
+        -110138.640625,
+        283.3414611816406,
+        78.94804382324219
+      ],
+      "wheel": "RR"
+    }
+  ],
+  "wheelbase_m": 300.4609375,
+  "wheelbase_source": "physics_wheel_positions",
+  "wheelbase_inferred_m": 300.4609375,
+  "bounding_box_extent_m": [
+    2.3958897590637207,
+    1.081725001335144,
+    0.7438300251960754
+  ],
+  "units": {
+    "mass": "kg",
+    "center_of_mass": "m",
+    "moi": "kg*m^2",
+    "gear_switch_time": "s",
+    "clutch_strength": "kg*m^2/s",
+    "max_rpm": "rpm",
+    "drag_coefficient": "CARLA scalar",
+    "wheel.position": "m",
+    "wheel.radius": "cm",
+    "wheel.max_steer_angle": "deg",
+    "wheel.max_brake_torque": "N*m",
+    "wheel.max_handbrake_torque": "N*m",
+    "wheel.tire_friction": "CARLA scalar",
+    "wheel.damping_rate": "CARLA scalar",
+    "wheel.lat_stiff_value": "CARLA custom parameter",
+    "wheel.lat_stiff_max_load": "CARLA normalized load",
+    "wheel.long_stiff_value": "kg/rad"
+  },
+  "client_version": "0.9.15",
+  "server_version": "0.9.15",
+  "map": "Carla/Maps/OpenDriveMap",
+  "mode": "pad",
+  "capabilities": {
+    "physics_control": true,
+    "snapshot_state": true,
+    "wheel_steer_angle": true,
+    "debug_telemetry_overlay": true,
+    "native_wheel_telemetry": false,
+    "native_telemetry_method": null,
+    "wheel_telemetry_fallback": "kinematic_estimates_and_unavailable_fields"
+  },
+  "weather": {
+    "cloudiness": 5.0,
+    "precipitation": 0.0,
+    "precipitation_deposits": 0.0,
+    "wind_intensity": 10.0,
+    "sun_azimuth_angle": -1.0,
+    "sun_altitude_angle": 45.0,
+    "fog_density": 2.0,
+    "fog_distance": 0.75,
+    "fog_falloff": 0.10000000149011612,
+    "wetness": 0.0,
+    "scattering_intensity": 1.0,
+    "mie_scattering_scale": 0.029999999329447746,
+    "rayleigh_scattering_scale": 0.03310000151395798,
+    "dust_storm": 0.0
+  },
+  "telemetry_limitation": "Published 0.9.15 and 0.9.16 Python APIs do not document a per-wheel force/load/slip getter"
+}

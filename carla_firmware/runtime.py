@@ -53,7 +53,8 @@ def tick_checked(world, previous_frame, dt, timeout=30.0):
 def wheelbase_from_physics(physics, override=None):
     if len(physics.wheels) != 4:
         raise ValueError("The selected vehicle must have exactly four wheels")
-    positions = [float(w.position.x) for w in physics.wheels]
+    # CARLA wheel positions are reported in centimetres, unlike world transforms.
+    positions = [float(w.position.x) * 0.01 for w in physics.wheels]
     front = sorted(positions, reverse=True)[:2]
     rear = sorted(positions)[:2]
     inferred = (sum(front) / 2.0) - (sum(rear) / 2.0)
@@ -93,6 +94,8 @@ def physics_report(vehicle, wheelbase_override=None):
         item = _attrs(wheel, ("tire_friction", "damping_rate", "max_steer_angle", "radius",
                                "max_brake_torque", "max_handbrake_torque", "lat_stiff_max_load",
                                "lat_stiff_value", "long_stiff_value", "position"))
+        if item.get("position") is not None:
+            item["position"] = [coordinate * 0.01 for coordinate in item["position"]]
         item["wheel"] = name
         values["wheels"].append(item)
     extent = vehicle.bounding_box.extent

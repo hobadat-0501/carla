@@ -88,6 +88,8 @@ class CarlaFirmware:
                 "max_brake_torque", "max_handbrake_torque", "lat_stiff_max_load",
                 "lat_stiff_value", "long_stiff_value", "position",
             ))
+            if item.get("position") is not None:
+                item["position"] = [coordinate * 0.01 for coordinate in item["position"]]
             item["wheel"] = name
             report["wheels"].append(item)
         box = getattr(self.vehicle, "bounding_box", None)
