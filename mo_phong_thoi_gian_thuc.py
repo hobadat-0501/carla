@@ -4,11 +4,13 @@ Everything is read from the running simulator:
   * vehicle parameters   : get_physics_control()
   * body states          : world snapshot (pose, velocity, acceleration, yaw rate)
   * wheel angle          : get_wheel_steer_angle()
-  * tire load/force/slip : Vehicle.get_telemetry()  (per wheel, engine values)
+  * tire load/force/slip : Vehicle.get_telemetry_data() ONLY if the client has it
+                           (get_telemetry_data in 0.9.16+; NOT in 0.9.15)
 The linear 3-DOF model of mo_hinh_xe.py runs ONLINE beside CARLA. Its parameters
-are identified from the live telemetry (no tham_so.json, no Python-only
-simulation of the vehicle). Longitudinal motion is conditioned on measured ax,
-so the comparison is a lateral/yaw study only.
+are identified live (no tham_so.json): from telemetry when available, otherwise
+by regression of measured ay and yaw acceleration on slip angles computed from
+measured states (needs --lf-fraction, an ASSUMPTION). Longitudinal motion is
+conditioned on measured ax, so the comparison is a lateral/yaw study only.
 
 Modes
   pad    : replaces the world with a flat pad, spawns a vehicle, drives a scripted
@@ -96,18 +98,18 @@ def refresh_params(ego):
     return float(ph.mass), sum(fr) / len(fr)
 
 
-def enable_telemetry(ego):
-    try:
-        ego.enable_telemetry(True)
-    except AttributeError as exc:
-        raise RuntimeError('This CARLA client has no Vehicle.enable_telemetry; check '
-                           "[n for n in dir(vehicle) if 'telem' in n.lower()]. Use --no-telemetry "
-                           'to log states only.') from exc
+def telemetry_reader(ego):
+    """CARLA 0.9.16 release notes name Vehicle.get_telemetry_data(). Whether it needs
+    an enabling call is NOT verified, so none is made. Returns a callable or None."""
+    for name in ('get_telemetry_data', 'get_telemetry'):
+        if hasattr(ego, name):
+            return getattr(ego, name)
+    return None
 
 
-def read_telemetry(ego):
+def read_telemetry(reader):
     out = {f'{w}_{k}': NAN for w in WHEELS for k in WHEEL_FIELDS}
-    tel = ego.get_telemetry()
+    tel = reader()
     if len(tel.wheels) == 4:
         for name, w in zip(WHEELS, tel.wheels):
             for k in WHEEL_FIELDS:
@@ -115,7 +117,7 @@ def read_telemetry(ego):
     return out
 
 
-def read_state(ego, world, carla, mass, mu, use_tel):
+def read_state(ego, world, carla, mass, mu, tel_reader):
     snapshot, s = snapshot_state(ego, world)
     tr = s.get_transform()
     v = s.get_velocity()
@@ -140,7 +142,7 @@ def read_state(ego, world, carla, mass, mu, use_tel):
            'Fx_total_est_N': mass * ax, 'Fy_total_est_N': mass * ay}
     if not all(math.isfinite(row[k]) for k in BASE_KEYS):
         raise ValueError('Nonfinite CARLA state at frame %s' % row['frame'])
-    row.update(read_telemetry(ego) if use_tel else {f'{x}_{k}': NAN for x in WHEELS for k in WHEEL_FIELDS})
+    row.update(read_telemetry(tel_reader) if tel_reader else {f'{x}_{k}': NAN for x in WHEELS for k in WHEEL_FIELDS})
     row['Fy_front_tel_N'] = row['FL_lat_force'] + row['FR_lat_force']
     row['Fy_rear_tel_N'] = row['RL_lat_force'] + row['RR_lat_force']
     row['front_slip_tel'] = .5 * (row['FL_lat_slip'] + row['FR_lat_slip'])
@@ -171,17 +173,18 @@ def find_ego(world, args):
 
 # ------------------------------------------------------- online identification
 class OnlineIdentification:
-    """Parameters of mo_hinh_xe.py from live CARLA telemetry. No fixed file.
+    """Parameters of mo_hinh_xe.py identified live from CARLA data.
 
-    lf_fraction : static load split (near-static samples, |ax|,|ay|<0.3).
-    cf, cr      : zero-intercept regression of telemetry lateral force on slip
-                  angles computed from measured states (vx>3 m/s). Sign taken
-                  from the data, never assumed.
-    Iz          : regression of the yaw equation with telemetry axle forces;
-                  falls back to a rectangular-box assumption (flagged).
+    use_tel=True  (CARLA 0.9.16+): lf from static tire loads, Cf/Cr from telemetry
+                  lat_force vs slip, Iz from the yaw equation with axle forces.
+    use_tel=False (CARLA 0.9.15): unknowns cf/m, cr/m, iz/m from the stacked
+                  equations  af*cos(d)*cf + ar*cr = ay  and
+                  lf*af*cf - lr*ar*cr - rdot*iz = 0  (measured ay, r, delta;
+                  lf = lf_assumed*L is an ASSUMPTION). Iz falls back to a
+                  rectangular-box assumption if the regression is implausible.
     """
-    def __init__(self, L, ext, g=9.81):
-        self.L, self.g = L, g
+    def __init__(self, L, ext, use_tel, lf_assumed, g=9.81):
+        self.L, self.g, self.use_tel, self.lf_assumed = L, g, use_tel, lf_assumed
         self.box_iz_over_m = ((2 * ext[0]) ** 2 + (2 * ext[1]) ** 2) / 12.0
         self.ff_sum = 0.0
         self.ff_n = 0
@@ -189,13 +192,44 @@ class OnlineIdentification:
         self.f = [0.0, 0.0, 0]
         self.r = [0.0, 0.0, 0]
         self.iz = [0.0, 0.0, 0]
-        self.reason = 'cho_tai_tinh'
+        self.N = np.zeros((3, 3))
+        self.q = np.zeros(3)
+        self.n = 0
+        self.reason = 'cho_du_lieu'
 
     @property
     def lf_fraction(self):
+        if not self.use_tel:
+            return self.lf_assumed
         return 1.0 - self.ff_sum / self.ff_n if self.ff_n >= 100 else None
 
     def update(self, row, prev):
+        if self.use_tel:
+            self._update_telemetry(row, prev)
+        else:
+            self._update_states(row, prev)
+
+    def _update_states(self, row, prev):
+        if prev is None or row['vx_mps'] < 3.0:
+            return
+        dt = row['t_sim_s'] - prev['t_sim_s']
+        if dt <= 0 or abs(row['ay_mps2']) > 4.0:  # keep to the roughly linear range
+            return
+        lf = self.lf_assumed * self.L
+        lr = self.L - lf
+        vx, vy, r, d = row['vx_mps'], row['vy_mps'], row['r_radps'], row['delta_equiv_rad']
+        af = d - math.atan2(vy + lf * r, vx)
+        ar = -math.atan2(vy - lr * r, vx)
+        if max(abs(af), abs(ar)) < .005:
+            return
+        rdot = (r - prev['r_radps']) / dt
+        a1 = np.array([af * math.cos(d), ar, 0.0])
+        a2 = np.array([lf * af, -lr * ar, -rdot])
+        self.N += np.outer(a1, a1) + np.outer(a2, a2)
+        self.q += a1 * row['ay_mps2']
+        self.n += 1
+
+    def _update_telemetry(self, row, prev):
         ax, ay = row['ax_mps2'], row['ay_mps2']
         loads = [row[f'{w}_tire_load'] for w in WHEELS]
         if not all(math.isfinite(x) for x in loads + [row['FL_lat_force'], row['RL_lat_force']]):
@@ -231,7 +265,49 @@ class OnlineIdentification:
                 self.iz[1] += rdot * rdot
                 self.iz[2] += 1
 
+    def _build(self, mass, lf_frac, cf, cr, iz, sources):
+        p = {'wheelbase_m': self.L, 'mass_kg': mass, 'low_speed_end_mps': .8,
+             'longitudinal': dict(traction_gain=0., brake_gain=0., rolling_accel=0., linear_drag=0.),
+             'lateral': dict(cf_over_mass=float(cf), cr_over_mass=float(cr),
+                             lf_fraction=float(lf_frac), iz_over_mass=float(iz))}
+        try:
+            validate_parameters(p)
+        except (ValueError, KeyError) as exc:
+            self.reason = 'tham_so_khong_hop_le: ' + str(exc)
+            return None
+        p['_sources'] = sources
+        self.reason = 'san_sang'
+        return p
+
     def parameters(self, mass):
+        return self._params_telemetry(mass) if self.use_tel else self._params_states(mass)
+
+    def _params_states(self, mass):
+        if self.n < 300:
+            self.reason = 'cho_kich_thich_ngang (lai khi vx>3 m/s)'
+            return None
+        try:
+            cf, cr, iz = np.linalg.solve(self.N + 1e-9 * np.eye(3), self.q)
+        except np.linalg.LinAlgError:
+            self.reason = 'he_phuong_trinh_suy_bien'
+            return None
+        source = 'state_regression'
+        if not (cf > 0 and cr > 0 and .2 < iz < 10):
+            iz, source = self.box_iz_over_m, 'rectangular_box_assumption'
+            try:
+                cf, cr = np.linalg.solve(self.N[:2, :2] + 1e-9 * np.eye(2),
+                                         self.q[:2] - self.N[:2, 2] * iz)
+            except np.linalg.LinAlgError:
+                self.reason = 'he_phuong_trinh_suy_bien'
+                return None
+            if not (cf > 0 and cr > 0):
+                self.reason = 'hoi_quy_cho_do_cung_khong_duong (can kich thich ngang manh hon)'
+                return None
+        return self._build(mass, self.lf_assumed, cf, cr, iz,
+                           {'lf_fraction': 'ASSUMED (--lf-fraction)', 'cf_cr': 'regression of measured ay/yaw acceleration',
+                            'iz_over_mass': source, 'samples': self.n})
+
+    def _params_telemetry(self, mass):
         lf_frac = self.lf_fraction
         if lf_frac is None:
             self.reason = 'cho_tai_tinh (xe gan dung yen/gia toc nho)'
@@ -244,26 +320,16 @@ class OnlineIdentification:
             self.reason = 'dau_luc_ngang_truc_truoc_sau_khong_nhat_quan'
             return None
         sign = 1.0 if kf > 0 else -1.0
-        iz, iz_source = self.box_iz_over_m, 'rectangular_box_assumption'
+        iz, source = self.box_iz_over_m, 'rectangular_box_assumption'
         if self.iz[2] >= 200 and self.iz[1] > 1e-3:
             candidate = sign * self.iz[0] / self.iz[1]
             if math.isfinite(candidate) and .2 < candidate < 10:
-                iz, iz_source = candidate, 'yaw_equation_regression'
-        p = {'wheelbase_m': self.L, 'mass_kg': mass, 'low_speed_end_mps': .8,
-             'longitudinal': dict(traction_gain=0., brake_gain=0., rolling_accel=0., linear_drag=0.),
-             'lateral': dict(cf_over_mass=abs(kf) / mass, cr_over_mass=abs(kr) / mass,
-                             lf_fraction=lf_frac, iz_over_mass=iz)}
-        try:
-            validate_parameters(p)
-        except (ValueError, KeyError) as exc:
-            self.reason = 'tham_so_khong_hop_le: ' + str(exc)
-            return None
-        p['_sources'] = {'lf_fraction': 'telemetry static load split',
-                         'cf_cr': 'telemetry lat_force regression', 'iz_over_mass': iz_source,
-                         'lat_force_sign_vs_body_y': sign, 'samples_front': self.f[2],
-                         'samples_rear': self.r[2], 'samples_static_load': self.ff_n}
-        self.reason = 'san_sang'
-        return p
+                iz, source = candidate, 'yaw_equation_regression'
+        return self._build(mass, lf_frac, abs(kf) / mass, abs(kr) / mass, iz,
+                           {'lf_fraction': 'telemetry static load split', 'cf_cr': 'telemetry lat_force regression',
+                            'iz_over_mass': source, 'lat_force_sign_vs_body_y': sign,
+                            'samples_front': self.f[2], 'samples_rear': self.r[2],
+                            'samples_static_load': self.ff_n})
 
 
 # ----------------------------------------------------------------- shadow model
@@ -510,9 +576,15 @@ def _run(args, status):
         status.update(vehicle_actor_id=ego.id, vehicle_type=ego.type_id, mode=args.mode)
         print(f'Xe: actor={ego.id} {ego.type_id}', flush=True)
 
-        use_tel = not args.no_telemetry
+        tel_reader = None if args.no_telemetry else telemetry_reader(ego)
+        use_tel = tel_reader is not None
+        use_model = not args.no_model
+        if not args.no_telemetry and not use_tel:
+            print('CARLA 0.9.15 khong co API doc telemetry (chi co tu 0.9.16). Dung nhan dang tu '
+                  f'trang thai do; lf_fraction GIA THIET = {args.lf_fraction}.', flush=True)
         if use_tel:
-            enable_telemetry(ego)
+            print('Telemetry: dung Vehicle.' + tel_reader.__name__ + '() (ten chua duoc kiem chung tren may nay).',
+                  flush=True)
         if args.mode == 'pad':  # let suspension/telemetry initialise before reading physics
             for _ in range(5):
                 checked_tick(world, None, args.timeout, dt)
@@ -524,16 +596,20 @@ def _run(args, status):
                 raise RuntimeError('Friction scalar read-back mismatch')
         report.update(client_version=versions[0], server_version=versions[1],
                       map_name=world.get_map().name, mode=args.mode, telemetry_used=use_tel,
+                      identification='telemetry' if use_tel else 'measured_state_regression',
+                      lf_fraction_assumed=None if use_tel else args.lf_fraction,
                       data_source='CARLA simulator state read live; not a physical vehicle experiment',
                       mu_note='tire_friction is a CARLA scalar, not a verified effective mu')
         save_json(args.out / 'tham_so_carla.json', report)
         mass, mu = refresh_params(ego)
-        ident = OnlineIdentification(L, report['bounding_box_extent_m']) if use_tel else None
-        shadow = ShadowModel(args.reset_s) if use_tel else None
+        ident = (OnlineIdentification(L, report['bounding_box_extent_m'], use_tel, args.lf_fraction)
+                 if use_model else None)
+        shadow = ShadowModel(args.reset_s) if use_model else None
         maxsteer = max(w.max_steer_angle for w in list(physics.wheels)[:2])
         driver = Driver(args, maxsteer) if args.mode == 'pad' else None
         plot = LivePlot(args.plot_window) if args.plot else None
-        print(f'Khoi luong={mass:.0f} kg; co so={L:.3f} m; telemetry={"bat" if use_tel else "tat"}', flush=True)
+        print(f'Khoi luong={mass:.0f} kg; co so={L:.3f} m; telemetry={"bat" if use_tel else "khong co"}; '
+              f'mo hinh online={"bat" if use_model else "tat"}', flush=True)
 
         status['phase'] = 'realtime'
         status['result'] = 'duration_complete'
@@ -554,7 +630,7 @@ def _run(args, status):
                     if time.monotonic() >= next_refresh:
                         mass, mu = refresh_params(ego)
                         next_refresh = time.monotonic() + args.param_refresh
-                    row = read_state(ego, world, carla, mass, mu, use_tel)
+                    row = read_state(ego, world, carla, mass, mu, tel_reader)
                     if prev is not None and row['frame'] == prev['frame']:
                         continue
                     if t0 is None:
@@ -563,17 +639,17 @@ def _run(args, status):
                     row['phase'] = driver.phase if driver else 'attach'
                     if prev is not None and row['frame'] != prev['frame'] + 1:
                         gaps += 1
-                    if use_tel:
+                    if use_model:
                         ident.update(row, prev)
                         params = ident.parameters(mass)
                         if params is not None and not ready_announced:
                             ready_announced = True
-                            print('Tham so mo hinh da nhan dang tu telemetry: '
+                            print('Tham so mo hinh da nhan dang: '
                                   f'cf/m={params["lateral"]["cf_over_mass"]:.2f} '
                                   f'cr/m={params["lateral"]["cr_over_mass"]:.2f} '
                                   f'lf_frac={params["lateral"]["lf_fraction"]:.3f} '
                                   f'iz/m={params["lateral"]["iz_over_mass"]:.2f} '
-                                  f'({params["_sources"]["iz_over_mass"]})', flush=True)
+                                  f'(Iz: {params["_sources"]["iz_over_mass"]})', flush=True)
                         row.update(shadow.step(row, prev, params))
                     else:
                         row.update({k: NAN for k in MODEL_KEYS})
@@ -594,7 +670,7 @@ def _run(args, status):
                         last_print = now
                         tail = (f' | mo hinh err vy={row["err_vy_mps"]:+.3f} r={row["err_r_radps"]:+.4f}'
                                 if row['model_active'] else
-                                f' | mo hinh: {ident.reason if use_tel else "tat"}')
+                                f' | mo hinh: {ident.reason if use_model else "tat"}')
                         print(f'[{row["phase"]:8s}] t={row["t_s"]:6.2f}s v={row["speed_kmh"]:5.1f}km/h '
                               f'ax={row["ax_mps2"]:5.2f} ay={row["ay_mps2"]:5.2f} '
                               f'r={math.degrees(row["r_radps"]):6.1f}deg/s '
@@ -617,17 +693,18 @@ def _run(args, status):
             finally:
                 f.flush()
         status['frame_gaps'] = gaps
-        if use_tel:
+        if use_model:
             lw = ident.load_over_weight
             final = ident.parameters(mass)
             save_json(args.out / 'mo_hinh_truc_tuyen.json', {
                 'identified_parameters': final,
                 'identification_status': ident.reason,
                 'static_tire_load_over_weight_mean': float(np.mean(lw)) if lw else None,
-                'static_load_note': 'Close to 1 means telemetry tire_load is in newtons; otherwise check units.',
-                'lat_force_vs_m_ay': 'Compare Fy_front_tel_N+Fy_rear_tel_N with Fy_total_est_N in states_realtime.csv.',
+                'identification_mode': 'telemetry' if use_tel else 'measured_state_regression',
+                'static_load_note': 'Telemetry only: close to 1 means tire_load is in newtons.',
                 'shadow_model': shadow.summary(),
-                'assumptions': ['Linear tires; vx conditioned on measured ax; frozen parameters per reset window.',
+                'assumptions': ['lf_fraction assumed (--lf-fraction) when telemetry is unavailable.',
+                                'Linear tires; vx conditioned on measured ax; frozen parameters per reset window.',
                                 'Iz may be a rectangular-box assumption: see _sources.iz_over_mass.',
                                 'No ISO conformity or real-vehicle validation.']})
     finally:
@@ -666,7 +743,10 @@ def main():
     p.add_argument('--reset-s', type=float, default=1.0, help='shadow model re-initialisation period (sim s)')
     p.add_argument('--param-refresh', type=float, default=1.0)
     p.add_argument('--print-hz', type=float, default=5.0)
-    p.add_argument('--no-telemetry', action='store_true', help='log states only; no identification/model')
+    p.add_argument('--no-telemetry', action='store_true', help='do not read telemetry even if available')
+    p.add_argument('--no-model', action='store_true', help='log states only; no identification/shadow model')
+    p.add_argument('--lf-fraction', type=float, default=.45,
+                   help='ASSUMED CoM-to-front-axle/wheelbase when telemetry is unavailable (CARLA 0.9.15)')
     p.add_argument('--plot', action='store_true')
     p.add_argument('--plot-window', type=float, default=20.0)
     p.add_argument('--keep-vehicle', action='store_true', help='pad mode: freeze and keep the vehicle at the end')
@@ -680,6 +760,8 @@ def main():
             and 0 < a.delta_deg <= 10 and a.repeat_s >= 0 and a.duration >= 0 and .2 <= a.reset_s <= 10
             and a.param_refresh > 0 and 0 < a.print_hz <= 60 and a.wait >= 0):
         p.error('Invalid argument range')
+    if not (0 < a.lf_fraction < 1):
+        p.error('lf-fraction must be in (0,1)')
     if a.tire_friction is not None and not (0 < a.tire_friction <= 10):
         p.error('tire-friction in (0,10]')
     if a.wheelbase is not None and not (math.isfinite(a.wheelbase) and a.wheelbase > 0):
