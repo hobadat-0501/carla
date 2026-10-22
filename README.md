@@ -27,6 +27,32 @@ python carla_sim.py realtime --mode attach --role-name hero --duration 0 --out k
 python carla_sim.py fit --runs ket_qua/ngang_01 --out ket_qua/model.json
 ```
 
+## MATLAB kinematic MPC in CARLA
+
+`carla_mpc.py` runs a Python port of `matlab/mpc/kin_mpc.m` on a live CARLA vehicle. It uses the same MPC sample time (0.1 s), prediction step (0.2 s), horizon (8), cost weights, acceleration limits, steering limits, and steering slew limits. The kinematic geometry is read from the spawned CARLA vehicle's physics. The MATLAB `wind07`, `wind10`, `sine10`, and `sine15` reference paths are available.
+
+Start CARLA 0.9.15, activate the environment described above, then run:
+
+```bash
+python carla_mpc.py --map Town06 --spawn-index 0 --scenario wind10 --duration 60 --out ket_qua/mpc_wind10_01
+```
+
+For the sine path:
+
+```bash
+python carla_mpc.py --map Town06 --spawn-index 0 --scenario sine10 --duration 60 --out ket_qua/mpc_sine10_01
+```
+
+To show live plots while the CARLA vehicle is driving (requires a graphical desktop), add `--plot`:
+
+```bash
+python carla_mpc.py --map Town06 --spawn-index 0 --scenario wind10 --duration 60 --plot --out ket_qua/mpc_wind10_live_01
+```
+
+The live window shows CARLA vehicle position against the reference, measured/reference speed, and cross-track error. At the end it saves `mpc_live_plot.png` beside `states_mpc.csv`.
+
+The runner loads the selected map, spawns a Tesla Model 3, and writes `states_mpc.csv` plus `run_status.txt`. Use a new output folder for every run. Unlike MATLAB's plant simulation, CARLA supplies the actual vehicle dynamics; the MATLAB reference tracking logic is preserved, while the longitudinal acceleration request is converted to CARLA throttle/brake using measured speed feedback. This is an initial live-simulation port and should be tuned for the selected vehicle/map before interpreting tracking errors.
+
 Select a new output directory for every run.
 
 ## Visible dynamics tests
