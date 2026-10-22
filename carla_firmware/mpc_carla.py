@@ -55,8 +55,8 @@ class KinematicMPC:
         guess = np.vstack((self.u[1:], self.u[-1]))
         bounds = [( -1.5, 1.0), (-self.delta_max, self.delta_max)] * hp
         dt = np.r_[ts, np.full(hp - 1, td)]
-        limits = np.column_stack((np.array([-3., -self.ddelta_max]) * dt,
-                                  np.array([1.5, self.ddelta_max]) * dt))
+        lower = dt[:, None] * np.array([-3., -self.ddelta_max])
+        upper = dt[:, None] * np.array([1.5, self.ddelta_max])
         def objective(flat):
             controls = flat.reshape(hp, 2)
             z, prev, cost = z0.copy(), self.previous.copy(), 0.0
@@ -71,8 +71,7 @@ class KinematicMPC:
             u = flat.reshape(hp, 2)
             prev = np.vstack((self.previous, u[:-1]))
             d = u - prev
-            return np.r_[d[:, 0] - limits[:, 0], limits[:, 1] - d[:, 0],
-                         d[:, 1] - limits[:, 0], limits[:, 1] - d[:, 1]]
+            return np.r_[(d - lower).ravel(), (upper - d).ravel()]
         result = minimize(objective, guess.ravel(), method="SLSQP", bounds=bounds,
                           constraints=[{"type": "ineq", "fun": slew}],
                           options={"maxiter": 100, "ftol": 1e-6, "disp": False})
