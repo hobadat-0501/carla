@@ -128,6 +128,7 @@ def run(argv=None):
     p.add_argument("--out", type=Path, default=Path("ket_qua/mpc_carla"))
     p.add_argument("--timeout", type=float, default=30); p.add_argument("--fast", action="store_true")
     p.add_argument("--plot", action="store_true", help="show live path, speed, and cross-track plots")
+    p.add_argument("--no-spectator-follow", action="store_true", help="disable the CARLA camera following the MPC vehicle")
     args = p.parse_args(argv)
     if args.dt <= 0 or args.duration <= 0: p.error("--dt and --duration must be positive")
     import carla
@@ -169,6 +170,7 @@ def run(argv=None):
         frame = float(world.get_snapshot().timestamp.elapsed_seconds)
         elapsed = 0.; last_control_t = -1e9; progress_idx = 0
         last_u = np.zeros(2); rows = 0; last_wall = time.monotonic()
+        last_camera_frame = -10; last_hud_frame = -10
         columns = ["frame", "t_s", "X_m", "Y_m", "psi_rad", "vx_mps", "vy_mps", "speed_mps",
                    "ref_s_m", "ref_x_m", "ref_y_m", "ref_psi_rad", "ref_speed_mps", "accel_cmd_mps2",
                    "delta_cmd_rad", "steer_norm", "throttle", "brake", "mpc_success", "cost", "cross_track_m"]
@@ -182,6 +184,12 @@ def run(argv=None):
                         f"Spawned vehicle {vehicle.id} is missing from CARLA snapshot at frame {snapshot.frame}"
                     )
                 tf = state_actor.get_transform(); vel = state_actor.get_velocity()
+                if not args.no_spectator_follow and snapshot.frame - last_camera_frame >= 5:
+                    camera_location = tf.transform(carla.Location(x=-14.0, z=7.0))
+                    world.get_spectator().set_transform(carla.Transform(
+                        camera_location,
+                        carla.Rotation(pitch=-22.0, yaw=tf.rotation.yaw)))
+                    last_camera_frame = snapshot.frame
                 yaw_world = math.radians(tf.rotation.yaw)
                 psi = -yaw_world
                 vx = vel.x * math.cos(yaw_world) + vel.y * math.sin(yaw_world)
@@ -218,6 +226,13 @@ def run(argv=None):
                 if live_plot is not None and (rows % max(1, round(controller.ts/args.dt)) == 0):
                     live_plot.update(elapsed, x, y, math.hypot(vx, vy), target_speed,
                                      math.hypot(x-ref_x, y-ref_y))
+                if snapshot.frame - last_hud_frame >= 5:
+                    world.debug.draw_string(
+                        carla.Location(x=tf.location.x, y=tf.location.y, z=tf.location.z + 3.5),
+                        f"KINEMATIC MPC | {args.scenario} | t={elapsed:.1f}s | "
+                        f"v={math.hypot(vx, vy):.1f} m/s | e={math.hypot(x-ref_x, y-ref_y):.2f} m",
+                        draw_shadow=True, color=carla.Color(80, 255, 100), life_time=.2)
+                    last_hud_frame = snapshot.frame
                 rows += 1
                 old_frame = tick_checked(world, old_frame, args.dt, args.timeout)
                 # Use CARLA elapsed time from initial frame rather than accumulated wall time.
