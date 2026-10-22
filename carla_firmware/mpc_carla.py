@@ -147,6 +147,8 @@ def run(argv=None):
         if vehicle is None: raise RuntimeError("Could not spawn vehicle at selected point")
         actors.append(vehicle)
         vehicle.apply_control(carla.VehicleControl(brake=1.0))
+        # CARLA snapshots do not include a newly spawned actor until the world ticks.
+        old_frame = tick_checked(world, None, args.dt, args.timeout)
         physics, _ = physics_report(vehicle)
         # The source MATLAB file uses lf=wheelbase/2-COM_x and lr=wheelbase/2+COM_x.
         wheels = list(physics.wheels)
@@ -165,7 +167,8 @@ def run(argv=None):
             return (origin.location.x + c*x - sn*y, -origin.location.y - sn*x - c*y,
                     -yaw - psi)
         live_plot = _LivePlot(*global_ref(rx, ry, rpsi)[:2]) if args.plot else None
-        old_frame = None; frame = None; elapsed = 0.; last_control_t = -1e9; progress_idx = 0
+        frame = float(world.get_snapshot().timestamp.elapsed_seconds)
+        elapsed = 0.; last_control_t = -1e9; progress_idx = 0
         last_u = np.zeros(2); rows = 0; last_wall = time.monotonic()
         columns = ["frame", "t_s", "X_m", "Y_m", "psi_rad", "vx_mps", "vy_mps", "speed_mps",
                    "ref_s_m", "ref_x_m", "ref_y_m", "ref_psi_rad", "ref_speed_mps", "accel_cmd_mps2",
@@ -175,6 +178,10 @@ def run(argv=None):
             while elapsed < args.duration and s[-1] > 0:
                 snapshot = world.get_snapshot()
                 state_actor = snapshot.find(vehicle.id)
+                if state_actor is None:
+                    raise RuntimeError(
+                        f"Spawned vehicle {vehicle.id} is missing from CARLA snapshot at frame {snapshot.frame}"
+                    )
                 tf = state_actor.get_transform(); vel = state_actor.get_velocity()
                 yaw_world = math.radians(tf.rotation.yaw)
                 psi = -yaw_world
@@ -215,7 +222,6 @@ def run(argv=None):
                 rows += 1
                 old_frame = tick_checked(world, old_frame, args.dt, args.timeout)
                 # Use CARLA elapsed time from initial frame rather than accumulated wall time.
-                if frame is None: frame = snapshot.timestamp.elapsed_seconds
                 elapsed = float(world.get_snapshot().timestamp.elapsed_seconds) - frame
                 if not args.fast:
                     delay = args.dt - (time.monotonic() - last_wall)
