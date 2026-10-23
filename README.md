@@ -106,21 +106,21 @@ Each run writes `states.csv` or `states_realtime.csv`, `metadata.json`, `tham_so
 
 ## MATLAB `huong_1` in CARLA
 
-The CARLA MPC accepts the `lowspeed`, `wind07`, and `wind10` reference paths from `matlab/huong_1/scenario.m` and ports its understeer coefficient `K` and yaw-delay compensation modes (`none`, `leff`, `lambda`, `lambda_free`). `K` is computed from the spawned vehicle's mass and geometry plus the per-tire cornering stiffnesses in `params.m`. CARLA dynamics provide the measured vehicle response. The CARLA-specific curvature feed-forward remains enabled by default; turn it off for a closer comparison with the MATLAB huong_1 controller.
+This is a separate runner: `carla_mpc_huong1.py` and `carla_firmware/mpc_carla_huong1.py`. The existing `carla_mpc.py` and its controller are left unchanged. The new runner accepts the `lowspeed`, `wind07`, and `wind10` reference paths from `matlab/huong_1/scenario.m` and ports its understeer coefficient `K` and yaw-delay compensation modes (`none`, `leff`, `lambda`, `lambda_free`). `K` is computed from the spawned vehicle's mass and geometry plus the per-tire cornering stiffnesses in `params.m`. CARLA dynamics provide the measured vehicle response. The CARLA-specific curvature feed-forward remains enabled by default; turn it off for a closer comparison with the MATLAB huong_1 controller.
 
 Example on the custom OpenDRIVE map, using the proposed `lambda` compensation:
 
 ```bash
-python carla_mpc.py --host 127.0.0.1 --port 2000 --scenario wind10 --duration 60 --compensation-mode lambda --curvature-feedforward off --plot --out ket_qua/huong1_wind10_lambda
+python carla_mpc_huong1.py --host 127.0.0.1 --port 2000 --scenario wind10 --duration 60 --compensation-mode lambda --curvature-feedforward off --plot --out ket_qua/huong1_wind10_lambda
 ```
 
 Run each mode into a different output folder to compare the CARLA results. Keep the scenario and all other options the same:
 
 ```bash
-python carla_mpc.py --scenario wind10 --duration 60 --compensation-mode none --curvature-feedforward off --out ket_qua/huong1_wind10_none
-python carla_mpc.py --scenario wind10 --duration 60 --compensation-mode leff --curvature-feedforward off --out ket_qua/huong1_wind10_leff
-python carla_mpc.py --scenario wind10 --duration 60 --compensation-mode lambda --curvature-feedforward off --out ket_qua/huong1_wind10_lambda
-python carla_mpc.py --scenario wind10 --duration 60 --compensation-mode lambda_free --curvature-feedforward off --out ket_qua/huong1_wind10_lambda_free
+python carla_mpc_huong1.py --scenario wind10 --duration 60 --compensation-mode none --curvature-feedforward off --out ket_qua/huong1_wind10_none
+python carla_mpc_huong1.py --scenario wind10 --duration 60 --compensation-mode leff --curvature-feedforward off --out ket_qua/huong1_wind10_leff
+python carla_mpc_huong1.py --scenario wind10 --duration 60 --compensation-mode lambda --curvature-feedforward off --out ket_qua/huong1_wind10_lambda
+python carla_mpc_huong1.py --scenario wind10 --duration 60 --compensation-mode lambda_free --curvature-feedforward off --out ket_qua/huong1_wind10_lambda_free
 ```
 
 Each run saves `states_mpc.csv` (including sampling period, MPC solve time, steering, tracking error, `K`, and `lambda`), `metrics.csv` (mean/std/maximum cross-track error and MPC solve time), `run_status.txt`, and the plot/video when enabled. Use `--scenario lowspeed` to run the MATLAB low-speed straight/quarter-turn/straight maneuver. A robustness sweep can change `--k-scale` to `0.7`, `1.0`, or `1.3`.
