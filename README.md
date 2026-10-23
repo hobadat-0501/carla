@@ -29,7 +29,7 @@ python carla_sim.py fit --runs ket_qua/ngang_01 --out ket_qua/model.json
 
 ## MATLAB kinematic MPC in CARLA
 
-`carla_mpc.py` runs a Python port of `matlab/mpc/kin_mpc.m` on a live CARLA vehicle. It uses the same MPC sample time (0.1 s), prediction step (0.2 s), horizon (8), cost weights, acceleration limits, steering limits, and steering slew limits. The kinematic geometry is read from the spawned CARLA vehicle's physics. The MATLAB `wind07`, `wind10`, `sine10`, and `sine15` reference paths are available. The runner generates its world from the project's RoadRunner OpenDRIVE map in `map/scene.xodr`; it does not load Town maps.
+`carla_mpc.py` runs a Python port of `matlab/mpc/kin_mpc.m` on a live CARLA vehicle. It uses the same MPC sample time (0.1 s), prediction step (0.2 s), horizon (8), and acceleration limits. The controller combines MPC feedback with steering feed-forward calculated from reference-path curvature; its steering slew penalty is tuned for the CARLA vehicle. Kinematic geometry and measured front-wheel steering are read from CARLA. The MATLAB `wind07`, `wind10`, `sine10`, and `sine15` reference paths are available. The runner generates its world from the project's RoadRunner OpenDRIVE map in `map/scene.xodr`; it does not load Town maps.
 
 Start CARLA 0.9.15, activate the environment described above, then run from the project directory:
 
@@ -38,7 +38,7 @@ python carla_mpc.py --scenario wind10 --duration 60 --plot --out ket_qua/mpc_win
 ```
 
 By default, the vehicle spawns on OpenDRIVE road 1, lane -1, at `s=100 m`. Change the custom map or spawn location with `--map-file`, `--road-id`, `--lane-id`, and `--spawn-s`.
-The CARLA MPC uses a lower steering slew penalty than the MATLAB ideal-plant run so it can respond to the vehicle dynamics. Adjust it with `--steer-slew-weight` if needed (default `50`; the prior value was `500`). The run ends when the reference path is complete or `--duration` is reached.
+The CARLA MPC uses a lower steering slew penalty than the MATLAB ideal-plant run so it can respond to the vehicle dynamics. Adjust it with `--steer-slew-weight` if needed (default `50`; the prior value was `500`). The live plot includes steering angle; `states_mpc.csv` records MPC total, curvature feed-forward, feedback correction, and measured front-wheel angles. The run ends when the reference path is complete or `--duration` is reached.
 
 For the sine path:
 

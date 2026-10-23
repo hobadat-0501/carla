@@ -49,6 +49,18 @@ def _reference(kind: str, length: float, ds: float = .05):
     return s, x, y, psi, speed
 
 
+def _front_wheel_angles(carla, vehicle):
+    """Return measured front-wheel steering angles in degrees, when exposed by CARLA."""
+    locations = getattr(carla, "VehicleWheelLocation", None)
+    getter = getattr(vehicle, "get_wheel_steer_angle", None)
+    if locations is None or not callable(getter):
+        return float("nan"), float("nan")
+    try:
+        return (float(getter(locations.FL_Wheel)), float(getter(locations.FR_Wheel)))
+    except (AttributeError, RuntimeError):
+        return float("nan"), float("nan")
+
+
 class KinematicMPC:
     def __init__(self, lf, lr, steer_limit, ts=.1, td=.2, hp=8, steer_slew_weight=50.):
         self.lf, self.lr, self.L = lf, lr, lf + lr
@@ -70,13 +82,29 @@ class KinematicMPC:
 
     def solve(self, z0, ref):
         hp, ts, td = self.hp, self.ts, self.td
+        # The reference heading already contains the planned path curvature.
+        # Convert it to a steady-state bicycle steering angle, and let MPC
+        # optimize a correction around that feed-forward value.
+        dpsi = np.arctan2(np.sin(np.diff(ref[2])), np.cos(np.diff(ref[2])))
+        ds = np.hypot(np.diff(ref[0]), np.diff(ref[1]))
+        curvature = np.divide(dpsi, ds, out=np.zeros_like(dpsi), where=ds > 1e-4)
+        beta_ff = np.arcsin(np.clip(self.lr * curvature, -.95, .95))
+        delta_ff = np.arctan((self.L / self.lr) * np.tan(beta_ff))
+        delta_ff = np.clip(delta_ff[:hp], -self.delta_max, self.delta_max)
+
         guess = np.vstack((self.u[1:], self.u[-1]))
-        bounds = [( -1.5, 1.0), (-self.delta_max, self.delta_max)] * hp
+        guess[:, 1] -= delta_ff
+        bounds = []
+        for i in range(hp):
+            bounds.extend(((-1.5, 1.0),
+                           (-self.delta_max - delta_ff[i], self.delta_max - delta_ff[i])))
+        guess = np.clip(guess.ravel(), [b[0] for b in bounds], [b[1] for b in bounds])
         dt = np.r_[ts, np.full(hp - 1, td)]
         lower = dt[:, None] * np.array([-3., -self.ddelta_max])
         upper = dt[:, None] * np.array([1.5, self.ddelta_max])
         def objective(flat):
-            controls = flat.reshape(hp, 2)
+            controls = flat.reshape(hp, 2).copy()
+            controls[:, 1] += delta_ff
             z, prev, cost = z0.copy(), self.previous.copy(), 0.0
             for i, u in enumerate(controls):
                 e = z - ref[:, i]; e[2] = math.atan2(math.sin(e[2]), math.cos(e[2]))
@@ -86,16 +114,19 @@ class KinematicMPC:
             e = z - ref[:, hp]; e[2] = math.atan2(math.sin(e[2]), math.cos(e[2]))
             return cost + np.dot(self.q, e * e)
         def slew(flat):
-            u = flat.reshape(hp, 2)
+            u = flat.reshape(hp, 2).copy()
+            u[:, 1] += delta_ff
             prev = np.vstack((self.previous, u[:-1]))
             d = u - prev
             return np.r_[(d - lower).ravel(), (upper - d).ravel()]
-        result = minimize(objective, guess.ravel(), method="SLSQP", bounds=bounds,
+        result = minimize(objective, guess, method="SLSQP", bounds=bounds,
                           constraints=[{"type": "ineq", "fun": slew}],
                           options={"maxiter": 100, "ftol": 1e-6, "disp": False})
-        controls = result.x.reshape(hp, 2)
+        feedback = result.x.reshape(hp, 2)
+        controls = feedback.copy()
+        controls[:, 1] += delta_ff
         self.u, self.previous = controls, controls[0].copy()
-        return controls[0], bool(result.success), float(result.fun)
+        return controls[0], bool(result.success), float(result.fun), float(delta_ff[0])
 
 
 class _LivePlot:
@@ -104,7 +135,7 @@ class _LivePlot:
         import matplotlib.pyplot as plt
         self.plt = plt
         plt.ion()
-        self.fig, self.axes = plt.subplots(1, 3, figsize=(15, 4.5), constrained_layout=True)
+        self.fig, self.axes = plt.subplots(1, 4, figsize=(19, 4.5), constrained_layout=True)
         self.fig.suptitle("CARLA live kinematic MPC", fontweight="bold")
         ax = self.axes[0]
         ax.plot(ref_x, ref_y, "--", color="#9aa6b2", lw=1, label="Reference")
@@ -117,15 +148,25 @@ class _LivePlot:
         self.axes[1].set(title="Speed", xlabel="Time (s)", ylabel="m/s"); self.axes[1].legend(loc="best"); self.axes[1].grid(True, alpha=.7)
         self.error, = self.axes[2].plot([], [], color="#7c3aed", lw=1.5)
         self.axes[2].set(title="Cross-track error", xlabel="Time (s)", ylabel="m"); self.axes[2].grid(True, alpha=.7)
-        self.t, self.x, self.y, self.v, self.vref, self.err = [], [], [], [], [], []
+        self.delta, = self.axes[3].plot([], [], color="#1769aa", lw=1.5, label="MPC total")
+        self.delta_ff, = self.axes[3].plot([], [], "--", color="#e28a1b", lw=1.2, label="Feed-forward")
+        self.delta_measured, = self.axes[3].plot([], [], color="#16803c", lw=1.1, label="Front wheels measured")
+        self.axes[3].set(title="Steering angle", xlabel="Time (s)", ylabel="degrees")
+        self.axes[3].legend(loc="best"); self.axes[3].grid(True, alpha=.7)
+        self.t, self.x, self.y, self.v, self.vref, self.err, self.delta_values, self.ff_values, self.measured_values = (
+            [], [], [], [], [], [], [], [], [])
         self.fig.show(); plt.pause(.001)
 
-    def update(self, t, x, y, speed, speed_ref, error):
+    def update(self, t, x, y, speed, speed_ref, error, delta_deg, delta_ff_deg, measured_delta_deg):
         self.t.append(t); self.x.append(x); self.y.append(y)
         self.v.append(speed); self.vref.append(speed_ref); self.err.append(error)
+        self.delta_values.append(delta_deg); self.ff_values.append(delta_ff_deg)
+        self.measured_values.append(measured_delta_deg)
         self.path.set_data(self.x, self.y); self.car.set_data([x], [y])
         self.speed.set_data(self.t, self.v); self.speed_ref.set_data(self.t, self.vref)
         self.error.set_data(self.t, self.err)
+        self.delta.set_data(self.t, self.delta_values); self.delta_ff.set_data(self.t, self.ff_values)
+        self.delta_measured.set_data(self.t, self.measured_values)
         for ax in self.axes[1:]: ax.relim(); ax.autoscale_view()
         self.fig.suptitle(f"CARLA live kinematic MPC | t={t:.1f} s | speed={speed:.1f} m/s | error={error:.2f} m",
                           fontweight="bold")
@@ -211,15 +252,21 @@ def run(argv=None):
         live_plot = _LivePlot(*global_ref(rx, ry, rpsi)[:2]) if args.plot else None
         (args.out / "map_used.txt").write_text(
             f"OpenDRIVE: {map_file}\nroad_id={args.road_id}\nlane_id={args.lane_id}\n"
-            f"spawn_s_m={args.spawn_s:g}\nsteer_slew_weight={args.steer_slew_weight:g}\n",
+            f"spawn_s_m={args.spawn_s:g}\nsteer_slew_weight={args.steer_slew_weight:g}\n"
+            f"wheelbase_m={wheelbase:.6g}\nlf_m={lf:.6g}\nlr_m={lr:.6g}\n"
+            f"steer_limit_deg={math.degrees(steer_limit):.6g}\n"
+            f"delta_max_deg={math.degrees(controller.delta_max):.6g}\n"
+            f"delta_rate_limit_deg_s={math.degrees(controller.ddelta_max):.6g}\n",
             encoding="utf-8")
         frame = float(world.get_snapshot().timestamp.elapsed_seconds)
         elapsed = 0.; last_control_t = -1e9; progress_idx = 0
-        last_u = np.zeros(2); rows = 0; last_wall = time.monotonic()
+        last_u = np.zeros(2); last_delta_ff = 0.; rows = 0; last_wall = time.monotonic()
         last_camera_frame = -10; last_hud_frame = -10
         columns = ["frame", "t_s", "X_m", "Y_m", "psi_rad", "vx_mps", "vy_mps", "speed_mps",
                    "ref_s_m", "ref_x_m", "ref_y_m", "ref_psi_rad", "ref_speed_mps", "accel_cmd_mps2",
-                   "delta_cmd_rad", "steer_norm", "throttle", "brake", "mpc_success", "cost", "cross_track_m"]
+                   "delta_cmd_rad", "delta_ff_rad", "delta_feedback_rad", "delta_measured_rad",
+                   "steer_fl_deg", "steer_fr_deg", "steer_limit_rad", "steer_norm",
+                   "throttle", "brake", "mpc_success", "cost", "cross_track_m"]
         with (args.out / "states_mpc.csv").open("w", newline="", encoding="utf-8") as stream:
             writer = csv.DictWriter(stream, fieldnames=columns); writer.writeheader()
             while elapsed < args.duration and progress_idx < len(s) - 1:
@@ -259,7 +306,8 @@ def run(argv=None):
                     ref_s = min(float(s[-1]), ref_s + float(rv[ri]) * controller.td)
                 success, cost = True, float("nan")
                 if elapsed - last_control_t >= controller.ts - 1e-6:
-                    last_u, success, cost = controller.solve(np.array([x, y, psi, max(vx, 0.)]), refs)
+                    last_u, success, cost, last_delta_ff = controller.solve(
+                        np.array([x, y, psi, max(vx, 0.)]), refs)
                     last_control_t = elapsed
                 # CARLA's normalized steering has opposite sign to this MATLAB frame.
                 steer_norm = max(-1., min(1., -last_u[1] / max(steer_limit, .01)))
@@ -268,16 +316,23 @@ def run(argv=None):
                 throttle = max(0., min(.65, accel / 3.0))
                 brake = max(0., min(.8, -accel / 6.0))
                 vehicle.apply_control(carla.VehicleControl(throttle=throttle, brake=brake, steer=steer_norm))
+                steer_fl_deg, steer_fr_deg = _front_wheel_angles(carla, vehicle)
+                delta_measured = -math.radians((steer_fl_deg + steer_fr_deg) / 2.)
                 ref_x, ref_y, ref_psi = refs[:3, 0]
                 writer.writerow({"frame": snapshot.frame, "t_s": elapsed, "X_m": x, "Y_m": y,
                     "psi_rad": psi, "vx_mps": vx, "vy_mps": vy, "speed_mps": math.hypot(vx, vy),
                     "ref_s_m": s[idx], "ref_x_m": ref_x, "ref_y_m": ref_y, "ref_psi_rad": ref_psi,
                     "ref_speed_mps": target_speed, "accel_cmd_mps2": last_u[0], "delta_cmd_rad": last_u[1],
+                    "delta_ff_rad": last_delta_ff, "delta_feedback_rad": last_u[1] - last_delta_ff,
+                    "delta_measured_rad": delta_measured,
+                    "steer_fl_deg": steer_fl_deg, "steer_fr_deg": steer_fr_deg,
+                    "steer_limit_rad": steer_limit,
                     "steer_norm": steer_norm, "throttle": throttle, "brake": brake, "mpc_success": int(success),
                     "cost": cost, "cross_track_m": math.hypot(x-ref_x, y-ref_y)})
                 if live_plot is not None and (rows % max(1, round(controller.ts/args.dt)) == 0):
                     live_plot.update(elapsed, x, y, math.hypot(vx, vy), target_speed,
-                                     math.hypot(x-ref_x, y-ref_y))
+                                     math.hypot(x-ref_x, y-ref_y), math.degrees(last_u[1]),
+                                     math.degrees(last_delta_ff), math.degrees(delta_measured))
                 if snapshot.frame - last_hud_frame >= 5:
                     world.debug.draw_string(
                         carla.Location(x=tf.location.x, y=tf.location.y, z=tf.location.z + 3.5),
