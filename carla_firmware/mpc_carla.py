@@ -10,7 +10,8 @@ from pathlib import Path
 import numpy as np
 from scipy.optimize import minimize
 
-from .runtime import configure_world, physics_report, tick_checked, validate_carla
+from .runtime import (configure_world, physics_report, tick_checked,
+                      validate_carla, wheelbase_from_physics)
 
 ROOT = Path(__file__).resolve().parent.parent
 
@@ -229,13 +230,26 @@ def run(argv=None):
         # CARLA snapshots do not include a newly spawned actor until the world ticks.
         old_frame = tick_checked(world, None, args.dt, args.timeout)
         physics, _ = physics_report(vehicle)
-        # The source MATLAB file uses lf=wheelbase/2-COM_x and lr=wheelbase/2+COM_x.
         wheels = list(physics.wheels)
-        front_x = sum(float(w.position.x) for w in wheels[:2]) / 200
-        rear_x = sum(float(w.position.x) for w in wheels[2:]) / 200
-        wheelbase = front_x - rear_x
+        wheelbase, wheelbase_source, _ = wheelbase_from_physics(physics)
+        # CARLA reports wheel positions in centimetres and COM in metres.
+        # Estimate each axle from the two most-forward/rearward wheel locations,
+        # then measure lf/lr from the actual center of mass.
+        wheel_x_m = [float(w.position.x) * 0.01 for w in wheels]
+        front_x = sum(sorted(wheel_x_m, reverse=True)[:2]) / 2.0
+        rear_x = sum(sorted(wheel_x_m)[:2]) / 2.0
         com_x = float(physics.center_of_mass.x)
-        lf, lr = wheelbase / 2 - com_x, wheelbase / 2 + com_x
+        lf, lr = front_x - com_x, com_x - rear_x
+        if not all(math.isfinite(v) and v > 0 for v in (wheelbase, lf, lr)):
+            raise RuntimeError(
+                f"Invalid vehicle geometry from CARLA: wheelbase={wheelbase:g} m, "
+                f"lf={lf:g} m, lr={lr:g} m, COM_x={com_x:g} m"
+            )
+        if abs((lf + lr) - wheelbase) > max(0.15, 0.08 * wheelbase):
+            raise RuntimeError(
+                f"Inconsistent CARLA axle/COM geometry: lf+lr={lf + lr:g} m, "
+                f"wheelbase={wheelbase:g} m (source={wheelbase_source})"
+            )
         steer_limit = math.radians(min(float(w.max_steer_angle) for w in wheels[:2]))
         controller = KinematicMPC(lf, lr, steer_limit,
                                   steer_slew_weight=args.steer_slew_weight)
@@ -253,7 +267,8 @@ def run(argv=None):
         (args.out / "map_used.txt").write_text(
             f"OpenDRIVE: {map_file}\nroad_id={args.road_id}\nlane_id={args.lane_id}\n"
             f"spawn_s_m={args.spawn_s:g}\nsteer_slew_weight={args.steer_slew_weight:g}\n"
-            f"wheelbase_m={wheelbase:.6g}\nlf_m={lf:.6g}\nlr_m={lr:.6g}\n"
+            f"wheelbase_m={wheelbase:.6g}\nwheelbase_source={wheelbase_source}\n"
+            f"lf_m={lf:.6g}\nlr_m={lr:.6g}\ncom_x_m={com_x:.6g}\n"
             f"steer_limit_deg={math.degrees(steer_limit):.6g}\n"
             f"delta_max_deg={math.degrees(controller.delta_max):.6g}\n"
             f"delta_rate_limit_deg_s={math.degrees(controller.ddelta_max):.6g}\n",
