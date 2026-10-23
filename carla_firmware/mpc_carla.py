@@ -196,8 +196,8 @@ def run(argv=None):
     p.add_argument("--timeout", type=float, default=30); p.add_argument("--fast", action="store_true")
     p.add_argument("--plot", action="store_true", help="show live path, speed, and cross-track plots")
     p.add_argument("--camera-mode", choices=("overhead", "follow", "follow-free", "manual"),
-                   default="follow-free",
-                   help="spectator: fixed overhead, locked rear follow, free-look follow, or manual")
+                   default="manual",
+                   help="spectator: CARLA-native manual control (default), fixed overhead, locked rear follow, or free-look follow")
     p.add_argument("--camera-height", type=float, default=80.0,
                    help="height above spawn for overhead spectator view, in metres")
     p.add_argument("--no-spectator-follow", action="store_true",
