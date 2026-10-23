@@ -196,6 +196,8 @@ def run(argv=None):
     p.add_argument("--timeout", type=float, default=30); p.add_argument("--fast", action="store_true")
     p.add_argument("--plot", action="store_true", help="show live path, speed, and cross-track plots")
     p.add_argument("--no-spectator-follow", action="store_true", help="disable the CARLA camera following the MPC vehicle")
+    p.add_argument("--no-trail", action="store_true",
+                   help="disable the persistent vehicle path drawn in the CARLA world")
     args = p.parse_args(argv)
     if args.dt <= 0 or args.duration <= 0: p.error("--dt and --duration must be positive")
     import carla
@@ -284,6 +286,8 @@ def run(argv=None):
         elapsed = 0.; last_control_t = -1e9; progress_idx = 0
         last_u = np.zeros(2); last_delta_ff = 0.; rows = 0; last_wall = time.monotonic()
         last_camera_frame = -10; last_hud_frame = -10
+        last_trail_frame = -10; last_trail_location = None
+        trail_every_frames = max(1, round(.1 / args.dt))
         columns = ["frame", "t_s", "X_m", "Y_m", "psi_rad", "vx_mps", "vy_mps", "speed_mps",
                    "ref_s_m", "ref_x_m", "ref_y_m", "ref_psi_rad", "ref_speed_mps", "accel_cmd_mps2",
                    "delta_cmd_rad", "delta_ff_rad", "delta_feedback_rad", "delta_measured_rad",
@@ -299,6 +303,15 @@ def run(argv=None):
                         f"Spawned vehicle {vehicle.id} is missing from CARLA snapshot at frame {snapshot.frame}"
                     )
                 tf = state_actor.get_transform(); vel = state_actor.get_velocity()
+                if not args.no_trail and snapshot.frame - last_trail_frame >= trail_every_frames:
+                    trail_location = carla.Location(
+                        x=tf.location.x, y=tf.location.y, z=tf.location.z + .12)
+                    if last_trail_location is not None:
+                        world.debug.draw_line(
+                            last_trail_location, trail_location, thickness=.16,
+                            color=carla.Color(0, 220, 255), life_time=0.0)
+                    last_trail_location = trail_location
+                    last_trail_frame = snapshot.frame
                 if not args.no_spectator_follow and snapshot.frame - last_camera_frame >= 5:
                     camera_location = tf.transform(carla.Location(x=-14.0, z=7.0))
                     world.get_spectator().set_transform(carla.Transform(
