@@ -195,8 +195,9 @@ def run(argv=None):
     p.add_argument("--out", type=Path, default=Path("ket_qua/mpc_carla"))
     p.add_argument("--timeout", type=float, default=30); p.add_argument("--fast", action="store_true")
     p.add_argument("--plot", action="store_true", help="show live path, speed, and cross-track plots")
-    p.add_argument("--camera-mode", choices=("overhead", "follow", "manual"), default="overhead",
-                   help="spectator view: fixed top-down overview, vehicle-follow, or leave camera untouched")
+    p.add_argument("--camera-mode", choices=("overhead", "follow", "follow-free", "manual"),
+                   default="follow-free",
+                   help="spectator: fixed overhead, locked rear follow, free-look follow, or manual")
     p.add_argument("--camera-height", type=float, default=80.0,
                    help="height above spawn for overhead spectator view, in metres")
     p.add_argument("--no-spectator-follow", action="store_true",
@@ -300,6 +301,7 @@ def run(argv=None):
         elapsed = 0.; last_control_t = -1e9; progress_idx = 0
         last_u = np.zeros(2); last_delta_ff = 0.; rows = 0; last_wall = time.monotonic()
         last_camera_frame = -10; last_hud_frame = -10
+        last_follow_vehicle_location = None
         last_trail_frame = -10; last_trail_location = None
         trail_every_frames = max(1, round(.1 / args.dt))
         columns = ["frame", "t_s", "sample_period_s", "mpc_updated", "mpc_compute_time_s",
@@ -332,6 +334,23 @@ def run(argv=None):
                     world.get_spectator().set_transform(carla.Transform(
                         camera_location,
                         carla.Rotation(pitch=-22.0, yaw=tf.rotation.yaw)))
+                    last_camera_frame = snapshot.frame
+                elif args.camera_mode == "follow-free" and snapshot.frame - last_camera_frame >= 5:
+                    spectator = world.get_spectator()
+                    if last_follow_vehicle_location is None:
+                        camera_location = tf.transform(carla.Location(x=-18.0, z=10.0))
+                        spectator.set_transform(carla.Transform(
+                            camera_location,
+                            carla.Rotation(pitch=-25.0, yaw=tf.rotation.yaw)))
+                    else:
+                        # Follow only vehicle translation. Preserve spectator rotation
+                        # so the user can freely look around instead of being yaw-locked.
+                        camera_transform = spectator.get_transform()
+                        vehicle_delta = tf.location - last_follow_vehicle_location
+                        camera_location = camera_transform.location + vehicle_delta
+                        spectator.set_transform(carla.Transform(
+                            camera_location, camera_transform.rotation))
+                    last_follow_vehicle_location = tf.location
                     last_camera_frame = snapshot.frame
                 yaw_world = math.radians(tf.rotation.yaw)
                 psi = -yaw_world
