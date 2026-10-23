@@ -195,11 +195,18 @@ def run(argv=None):
     p.add_argument("--out", type=Path, default=Path("ket_qua/mpc_carla"))
     p.add_argument("--timeout", type=float, default=30); p.add_argument("--fast", action="store_true")
     p.add_argument("--plot", action="store_true", help="show live path, speed, and cross-track plots")
-    p.add_argument("--no-spectator-follow", action="store_true", help="disable the CARLA camera following the MPC vehicle")
+    p.add_argument("--camera-mode", choices=("overhead", "follow", "manual"), default="overhead",
+                   help="spectator view: fixed top-down overview, vehicle-follow, or leave camera untouched")
+    p.add_argument("--camera-height", type=float, default=80.0,
+                   help="height above spawn for overhead spectator view, in metres")
+    p.add_argument("--no-spectator-follow", action="store_true",
+                   help="legacy alias for --camera-mode manual")
     p.add_argument("--no-trail", action="store_true",
                    help="disable the persistent vehicle path drawn in the CARLA world")
     args = p.parse_args(argv)
     if args.dt <= 0 or args.duration <= 0: p.error("--dt and --duration must be positive")
+    if args.camera_height <= 0: p.error("--camera-height must be positive")
+    if args.no_spectator_follow: args.camera_mode = "manual"
     import carla
     args.out.mkdir(parents=True, exist_ok=False)
     client = carla.Client(args.host, args.port); client.set_timeout(args.timeout)
@@ -223,6 +230,12 @@ def run(argv=None):
             )
         spawn = spawn.transform
         spawn.location.z += .5
+        if args.camera_mode == "overhead":
+            overhead = carla.Transform(
+                carla.Location(x=spawn.location.x, y=spawn.location.y,
+                               z=spawn.location.z + args.camera_height),
+                carla.Rotation(pitch=-90.0, yaw=spawn.rotation.yaw))
+            world.get_spectator().set_transform(overhead)
         bp = world.get_blueprint_library().find(args.vehicle)
         bp.set_attribute("role_name", "mpc_ego")
         vehicle = world.try_spawn_actor(bp, spawn)
@@ -275,7 +288,8 @@ def run(argv=None):
         live_plot = _LivePlot(*global_ref(rx, ry, rpsi)[:2]) if args.plot else None
         (args.out / "map_used.txt").write_text(
             f"OpenDRIVE: {map_file}\nroad_id={args.road_id}\nlane_id={args.lane_id}\n"
-            f"spawn_s_m={args.spawn_s:g}\nsteer_slew_weight={args.steer_slew_weight:g}\n"
+            f"spawn_s_m={args.spawn_s:g}\ncamera_mode={args.camera_mode}\n"
+            f"camera_height_m={args.camera_height:g}\nsteer_slew_weight={args.steer_slew_weight:g}\n"
             f"wheelbase_m={wheelbase:.6g}\nwheelbase_source={wheelbase_source}\n"
             f"lf_m={lf:.6g}\nlr_m={lr:.6g}\ncom_x_m={com_x:.6g}\n"
             f"steer_limit_deg={math.degrees(steer_limit):.6g}\n"
@@ -288,7 +302,8 @@ def run(argv=None):
         last_camera_frame = -10; last_hud_frame = -10
         last_trail_frame = -10; last_trail_location = None
         trail_every_frames = max(1, round(.1 / args.dt))
-        columns = ["frame", "t_s", "X_m", "Y_m", "psi_rad", "vx_mps", "vy_mps", "speed_mps",
+        columns = ["frame", "t_s", "sample_period_s", "mpc_updated", "mpc_compute_time_s",
+                   "X_m", "Y_m", "psi_rad", "vx_mps", "vy_mps", "speed_mps",
                    "ref_s_m", "ref_x_m", "ref_y_m", "ref_psi_rad", "ref_speed_mps", "accel_cmd_mps2",
                    "delta_cmd_rad", "delta_ff_rad", "delta_feedback_rad", "delta_measured_rad",
                    "steer_fl_deg", "steer_fr_deg", "steer_limit_rad", "steer_norm",
@@ -312,7 +327,7 @@ def run(argv=None):
                             color=carla.Color(0, 220, 255), life_time=0.0)
                     last_trail_location = trail_location
                     last_trail_frame = snapshot.frame
-                if not args.no_spectator_follow and snapshot.frame - last_camera_frame >= 5:
+                if args.camera_mode == "follow" and snapshot.frame - last_camera_frame >= 5:
                     camera_location = tf.transform(carla.Location(x=-14.0, z=7.0))
                     world.get_spectator().set_transform(carla.Transform(
                         camera_location,
@@ -340,9 +355,14 @@ def run(argv=None):
                     refs[:, j] = [qx, qy, qpsi, rv[ri]]
                     ref_s = min(float(s[-1]), ref_s + float(rv[ri]) * controller.td)
                 success, cost = True, float("nan")
+                mpc_updated = False
+                mpc_compute_time = ""
                 if elapsed - last_control_t >= controller.ts - 1e-6:
+                    solve_started = time.perf_counter()
                     last_u, success, cost, last_delta_ff = controller.solve(
                         np.array([x, y, psi, max(vx, 0.)]), refs)
+                    mpc_compute_time = time.perf_counter() - solve_started
+                    mpc_updated = True
                     last_control_t = elapsed
                 # CARLA's normalized steering has opposite sign to this MATLAB frame.
                 steer_norm = max(-1., min(1., -last_u[1] / max(steer_limit, .01)))
@@ -354,7 +374,9 @@ def run(argv=None):
                 steer_fl_deg, steer_fr_deg = _front_wheel_angles(carla, vehicle)
                 delta_measured = -math.radians((steer_fl_deg + steer_fr_deg) / 2.)
                 ref_x, ref_y, ref_psi = refs[:3, 0]
-                writer.writerow({"frame": snapshot.frame, "t_s": elapsed, "X_m": x, "Y_m": y,
+                writer.writerow({"frame": snapshot.frame, "t_s": elapsed,
+                    "sample_period_s": args.dt, "mpc_updated": int(mpc_updated),
+                    "mpc_compute_time_s": mpc_compute_time, "X_m": x, "Y_m": y,
                     "psi_rad": psi, "vx_mps": vx, "vy_mps": vy, "speed_mps": math.hypot(vx, vy),
                     "ref_s_m": s[idx], "ref_x_m": ref_x, "ref_y_m": ref_y, "ref_psi_rad": ref_psi,
                     "ref_speed_mps": target_speed, "accel_cmd_mps2": last_u[0], "delta_cmd_rad": last_u[1],
