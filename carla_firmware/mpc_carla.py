@@ -197,7 +197,7 @@ def run(argv=None):
     p.add_argument("--plot", action="store_true", help="show live path, speed, and cross-track plots")
     p.add_argument("--camera-mode", choices=("overhead", "follow", "follow-free", "manual"),
                    default="manual",
-                   help="spectator: CARLA-native manual control (default), fixed overhead, locked rear follow, or free-look follow")
+                   help="spectator: start by car then use CARLA controls (default), fixed overhead, locked rear follow, or free-look follow")
     p.add_argument("--camera-height", type=float, default=80.0,
                    help="height above spawn for overhead spectator view, in metres")
     p.add_argument("--no-spectator-follow", action="store_true",
@@ -237,6 +237,13 @@ def run(argv=None):
                                z=spawn.location.z + args.camera_height),
                 carla.Rotation(pitch=-90.0, yaw=spawn.rotation.yaw))
             world.get_spectator().set_transform(overhead)
+        elif args.camera_mode == "manual":
+            # Put the initial spectator near the ego vehicle, then leave it to
+            # CARLA's native controls; do not update it as the vehicle moves.
+            camera_location = spawn.transform(carla.Location(x=-18.0, z=10.0))
+            world.get_spectator().set_transform(carla.Transform(
+                camera_location,
+                carla.Rotation(pitch=-25.0, yaw=spawn.rotation.yaw)))
         bp = world.get_blueprint_library().find(args.vehicle)
         bp.set_attribute("role_name", "mpc_ego")
         vehicle = world.try_spawn_actor(bp, spawn)
