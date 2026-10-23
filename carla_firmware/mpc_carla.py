@@ -15,6 +15,19 @@ from .runtime import configure_world, physics_report, tick_checked, validate_car
 ROOT = Path(__file__).resolve().parent.parent
 
 
+def _movmean(values, window):
+    """MATLAB-style centered moving mean with shrinking endpoint windows."""
+    values = np.asarray(values, dtype=float)
+    window = max(1, int(window))
+    left = (window - 1) // 2
+    right = window - left
+    cumulative = np.r_[0.0, np.cumsum(values)]
+    indices = np.arange(values.size)
+    starts = np.maximum(0, indices - left)
+    stops = np.minimum(values.size, indices + right)
+    return (cumulative[stops] - cumulative[starts]) / (stops - starts)
+
+
 def _reference(kind: str, length: float, ds: float = .05):
     s = np.arange(0.0, length + ds, ds)
     if kind in ("sine10", "sine15"):
@@ -29,8 +42,9 @@ def _reference(kind: str, length: float, ds: float = .05):
         psi = np.r_[0.0, np.cumsum((k[:-1] + k[1:]) * .5 * ds)]
         x = np.r_[0.0, np.cumsum(np.cos(psi[:-1]) * ds)]
         y = np.r_[0.0, np.cumsum(np.sin(psi[:-1]) * ds)]
-        smooth = np.convolve(np.abs(k), np.ones(max(1, round(40 / ds))) / max(1, round(40 / ds)), mode="same")
+        smooth = _movmean(np.abs(k), round(40 / ds))
         v0 = np.clip(np.sqrt(2.5 / np.maximum(smooth, 1e-4)), 6, 22)
+        v0 = _movmean(v0, round(30 / ds))
         speed = (.7 if kind == "wind07" else 1.0) * v0
     return s, x, y, psi, speed
 
@@ -222,15 +236,19 @@ def run(argv=None):
                 vy = -(-vel.x * math.sin(yaw_world) + vel.y * math.cos(yaw_world))
                 x, y = tf.location.x, -tf.location.y
                 # Progress is the nearest point in a bounded forward window.
-                begin, end = max(0, progress_idx - 20), min(len(s), progress_idx + 1000)
+                # Match scenario.getref() in MATLAB: search 3 m behind and
+                # 30 m ahead so the projection cannot jump far down the path.
+                begin, end = max(0, progress_idx - 60), min(len(s), progress_idx + 601)
                 gx, gy, _ = global_ref(rx[begin:end], ry[begin:end], rpsi[begin:end])
                 idx = begin + int(np.argmin((gx-x)**2 + (gy-y)**2))
                 progress_idx = max(progress_idx, idx)
                 refs = np.zeros((4, controller.hp + 1))
+                ref_s = float(s[idx])
                 for j in range(controller.hp + 1):
-                    ri = min(len(s)-1, idx + round(j * controller.td * max(rv[idx], 1.) / .05))
+                    ri = min(len(s)-1, int(round(ref_s / .05)))
                     qx, qy, qpsi = global_ref(rx[ri], ry[ri], rpsi[ri])
                     refs[:, j] = [qx, qy, qpsi, rv[ri]]
+                    ref_s = min(float(s[-1]), ref_s + float(rv[ri]) * controller.td)
                 success, cost = True, float("nan")
                 if elapsed - last_control_t >= controller.ts - 1e-6:
                     last_u, success, cost = controller.solve(np.array([x, y, psi, max(vx, 0.)]), refs)
