@@ -164,8 +164,11 @@ def run(argv=None):
         yaw = math.radians(origin.rotation.yaw)
         c, sn = math.cos(yaw), math.sin(yaw)
         def global_ref(x, y, psi):
-            return (origin.location.x + c*x - sn*y, -origin.location.y - sn*x - c*y,
-                    -yaw - psi)
+            # CARLA uses +Y to the right; the MPC frame uses +Y to the left.
+            # State measurements use Y=-world_y and psi=-CARLA_yaw, so rotate
+            # references with that same convention (and preserve local heading).
+            return (origin.location.x + c*x + sn*y, -origin.location.y - sn*x + c*y,
+                    -yaw + psi)
         live_plot = _LivePlot(*global_ref(rx, ry, rpsi)[:2]) if args.plot else None
         frame = float(world.get_snapshot().timestamp.elapsed_seconds)
         elapsed = 0.; last_control_t = -1e9; progress_idx = 0
