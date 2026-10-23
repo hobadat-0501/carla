@@ -30,6 +30,8 @@ def _movmean(values, window):
 
 
 def _reference(kind: str, length: float, ds: float = .05):
+    if kind == "lowspeed":
+        length = 30.0 + 20.0 * math.pi / 2.0 + 50.0
     s = np.arange(0.0, length + ds, ds)
     if kind in ("sine10", "sine15"):
         x = s.copy()
@@ -37,7 +39,7 @@ def _reference(kind: str, length: float, ds: float = .05):
         psi = np.arctan2(np.gradient(y, ds), np.ones_like(y))
         vx = 10.0 if kind == "sine10" else 15.0
         speed = vx * np.sqrt(1 + (4 * 2 * math.pi / 100 * np.cos(2 * math.pi * x / 100)) ** 2)
-    else:
+    elif kind in ("wind07", "wind10"):
         k = (.012 * np.sin(2 * math.pi * s / 180) + .008 * np.sin(2 * math.pi * s / 97 + 1)
              + .006 * np.sin(2 * math.pi * s / 260 + 2))
         psi = np.r_[0.0, np.cumsum((k[:-1] + k[1:]) * .5 * ds)]
@@ -47,6 +49,16 @@ def _reference(kind: str, length: float, ds: float = .05):
         v0 = np.clip(np.sqrt(2.5 / np.maximum(smooth, 1e-4)), 6, 22)
         v0 = _movmean(v0, round(30 / ds))
         speed = (.7 if kind == "wind07" else 1.0) * v0
+    elif kind == "lowspeed":
+        straight, radius = 30.0, 20.0
+        k = np.where((s >= straight) & (s < straight + radius * math.pi / 2.0),
+                     -1.0 / radius, 0.0)
+        psi = np.r_[0.0, np.cumsum((k[:-1] + k[1:]) * .5 * ds)]
+        x = np.r_[0.0, np.cumsum(np.cos(psi[:-1]) * ds)]
+        y = np.r_[0.0, np.cumsum(np.sin(psi[:-1]) * ds)]
+        speed = np.zeros_like(s)
+    else:
+        raise ValueError(f"Unsupported reference scenario: {kind}")
     return s, x, y, psi, speed
 
 
@@ -63,9 +75,13 @@ def _front_wheel_angles(carla, vehicle):
 
 
 class KinematicMPC:
-    def __init__(self, lf, lr, steer_limit, ts=.1, td=.2, hp=8, steer_slew_weight=50.):
+    def __init__(self, lf, lr, steer_limit, ts=.1, td=.2, hp=8, steer_slew_weight=50.,
+                 compensation_mode="lambda", understeer_k=0.0, curvature_feedforward=True):
         self.lf, self.lr, self.L = lf, lr, lf + lr
         self.ts, self.td, self.hp = ts, td, hp
+        self.compensation_mode = compensation_mode
+        self.understeer_k = float(understeer_k)
+        self.curvature_feedforward = curvature_feedforward
         self.delta_max = min(math.atan(math.tan(math.radians(37)) * self.L / lr), steer_limit)
         self.ddelta_max = math.radians(10) * self.L / lr
         self.q = np.array([10., 10., 5., 5.])
@@ -76,22 +92,38 @@ class KinematicMPC:
         self.u = np.zeros((hp, 2))
         self.previous = np.zeros(2)
 
+    def compensation_lambda(self, speed):
+        if self.compensation_mode not in ("lambda", "lambda_free"):
+            return 0.0
+        eps = self.understeer_k * speed * speed / (self.L + self.understeer_k * speed * speed)
+        lam = (0.75 * (self.hp * self.td) * eps - self.td) / 2.0
+        return max(0.0, lam) if self.compensation_mode == "lambda" else lam
+
     def _step(self, z, u, dt):
         beta = math.atan(self.lr / self.L * math.tan(u[1]))
-        return z + dt * np.array([z[3] * math.cos(z[2] + beta), z[3] * math.sin(z[2] + beta),
-                                  z[3] / self.lr * math.sin(beta), u[0]])
+        yaw_rate = z[3] / self.lr * math.sin(beta)
+        eps = self.understeer_k * z[3] * z[3] / (self.L + self.understeer_k * z[3] * z[3])
+        if self.compensation_mode == "leff":
+            yaw_rate *= 1.0 - eps
+        lam = self.compensation_lambda(z[3])
+        heading = z[2] - lam * yaw_rate + beta
+        return z + dt * np.array([z[3] * math.cos(heading), z[3] * math.sin(heading),
+                                  yaw_rate, u[0]])
 
     def solve(self, z0, ref):
         hp, ts, td = self.hp, self.ts, self.td
         # The reference heading already contains the planned path curvature.
         # Convert it to a steady-state bicycle steering angle, and let MPC
         # optimize a correction around that feed-forward value.
-        dpsi = np.arctan2(np.sin(np.diff(ref[2])), np.cos(np.diff(ref[2])))
-        ds = np.hypot(np.diff(ref[0]), np.diff(ref[1]))
-        curvature = np.divide(dpsi, ds, out=np.zeros_like(dpsi), where=ds > 1e-4)
-        beta_ff = np.arcsin(np.clip(self.lr * curvature, -.95, .95))
-        delta_ff = np.arctan((self.L / self.lr) * np.tan(beta_ff))
-        delta_ff = np.clip(delta_ff[:hp], -self.delta_max, self.delta_max)
+        if self.curvature_feedforward:
+            dpsi = np.arctan2(np.sin(np.diff(ref[2])), np.cos(np.diff(ref[2])))
+            ds = np.hypot(np.diff(ref[0]), np.diff(ref[1]))
+            curvature = np.divide(dpsi, ds, out=np.zeros_like(dpsi), where=ds > 1e-4)
+            beta_ff = np.arcsin(np.clip(self.lr * curvature, -.95, .95))
+            delta_ff = np.arctan((self.L / self.lr) * np.tan(beta_ff))
+            delta_ff = np.clip(delta_ff[:hp], -self.delta_max, self.delta_max)
+        else:
+            delta_ff = np.zeros(hp)
 
         guess = np.vstack((self.u[1:], self.u[-1]))
         guess[:, 1] -= delta_ff
@@ -188,10 +220,20 @@ def run(argv=None):
     p.add_argument("--spawn-s", type=float, default=100.0,
                    help="longitudinal position on the selected OpenDRIVE road, in metres")
     p.add_argument("--vehicle", default="vehicle.tesla.model3")
-    p.add_argument("--scenario", choices=("wind07", "wind10", "sine10", "sine15"), default="wind10")
+    p.add_argument("--scenario", choices=("lowspeed", "wind07", "wind10", "sine10", "sine15"), default="wind10")
     p.add_argument("--duration", type=float, default=60); p.add_argument("--dt", type=float, default=.01)
     p.add_argument("--steer-slew-weight", type=float, default=50.,
                    help="MPC steering-change penalty; lower values make CARLA tracking more responsive")
+    p.add_argument("--compensation-mode", choices=("none", "leff", "lambda", "lambda_free"),
+                   default="lambda", help="Huong 1 yaw-delay compensation model")
+    p.add_argument("--k-scale", type=float, default=1.0,
+                   help="scale understeer coefficient K; robustness sweep: 0.7, 1.0, 1.3")
+    p.add_argument("--cornering-stiffness-front", type=float, default=60000.0,
+                   help="front per-tire cornering stiffness in N/rad, from matlab/huong_1/params.m")
+    p.add_argument("--cornering-stiffness-rear", type=float, default=60000.0,
+                   help="rear per-tire cornering stiffness in N/rad, from matlab/huong_1/params.m")
+    p.add_argument("--curvature-feedforward", choices=("on", "off"), default="on",
+                   help="disable to match the MATLAB huong_1 controller when comparing compensation modes")
     p.add_argument("--out", type=Path, default=Path("ket_qua/mpc_carla"))
     p.add_argument("--timeout", type=float, default=30); p.add_argument("--fast", action="store_true")
     p.add_argument("--plot", action="store_true", help="show live path, speed, and cross-track plots")
@@ -210,6 +252,9 @@ def run(argv=None):
     if args.dt <= 0 or args.duration <= 0: p.error("--dt and --duration must be positive")
     if args.camera_height <= 0: p.error("--camera-height must be positive")
     if args.video_fps <= 0: p.error("--video-fps must be positive")
+    if args.k_scale <= 0: p.error("--k-scale must be positive")
+    if args.cornering_stiffness_front <= 0 or args.cornering_stiffness_rear <= 0:
+        p.error("cornering stiffness values must be positive")
     if args.no_spectator_follow: args.camera_mode = "manual"
     import carla
     args.out.mkdir(parents=True, exist_ok=False)
@@ -312,9 +357,20 @@ def run(argv=None):
                 f"wheelbase={wheelbase:g} m (source={wheelbase_source})"
             )
         steer_limit = math.radians(min(float(w.max_steer_angle) for w in wheels[:2]))
+        mass = float(physics.mass)
+        understeer_k = mass / wheelbase * (
+            lr / (2.0 * args.cornering_stiffness_front)
+            - lf / (2.0 * args.cornering_stiffness_rear))
+        understeer_k *= args.k_scale
         controller = KinematicMPC(lf, lr, steer_limit,
-                                  steer_slew_weight=args.steer_slew_weight)
-        s, rx, ry, rpsi, rv = _reference(args.scenario, 820 if args.scenario.startswith("wind") else 290)
+                                  steer_slew_weight=args.steer_slew_weight,
+                                  compensation_mode=args.compensation_mode,
+                                  understeer_k=understeer_k,
+                                  curvature_feedforward=args.curvature_feedforward == "on")
+        ref_length = 800 if args.scenario.startswith("wind") else (290 if args.scenario.startswith("sine") else 112)
+        s, rx, ry, rpsi, rv = _reference(args.scenario, ref_length)
+        low_speed_times = np.array([0., 3., 6., 20., 24., 30., 33., 38., 41., 60.])
+        low_speed_values = np.array([0., 0., 3.5, 3.5, 0., 0., 6., 6., 0., 0.])
         origin = spawn
         yaw = math.radians(origin.rotation.yaw)
         c, sn = math.cos(yaw), math.sin(yaw)
@@ -329,6 +385,9 @@ def run(argv=None):
             f"OpenDRIVE: {map_file}\nroad_id={args.road_id}\nlane_id={args.lane_id}\n"
             f"spawn_s_m={args.spawn_s:g}\ncamera_mode={args.camera_mode}\n"
             f"camera_height_m={args.camera_height:g}\nvideo_fps={args.video_fps}\n"
+            f"compensation_mode={args.compensation_mode}\nundersteer_K_s2_per_m={understeer_k:.8g}\n"
+            f"K_scale={args.k_scale:g}\ncornering_stiffness_front_N_per_rad={args.cornering_stiffness_front:g}\n"
+            f"cornering_stiffness_rear_N_per_rad={args.cornering_stiffness_rear:g}\n"
             f"video_file=carla_vehicle_follow.mp4\nsteer_slew_weight={args.steer_slew_weight:g}\n"
             f"wheelbase_m={wheelbase:.6g}\nwheelbase_source={wheelbase_source}\n"
             f"lf_m={lf:.6g}\nlr_m={lr:.6g}\ncom_x_m={com_x:.6g}\n"
@@ -338,12 +397,14 @@ def run(argv=None):
             encoding="utf-8")
         frame = float(world.get_snapshot().timestamp.elapsed_seconds)
         elapsed = 0.; last_control_t = -1e9; progress_idx = 0
+        cross_track_values = []; solve_times = []
         last_u = np.zeros(2); last_delta_ff = 0.; rows = 0; last_wall = time.monotonic()
         last_camera_frame = -10; last_hud_frame = -10
         last_follow_vehicle_location = None
         last_trail_frame = -10; last_trail_location = None
         trail_every_frames = max(1, round(.1 / args.dt))
         columns = ["frame", "t_s", "sample_period_s", "mpc_updated", "mpc_compute_time_s",
+                   "understeer_K_s2_per_m", "yaw_delay_lambda_s",
                    "X_m", "Y_m", "psi_rad", "vx_mps", "vy_mps", "speed_mps",
                    "ref_s_m", "ref_x_m", "ref_y_m", "ref_psi_rad", "ref_speed_mps", "accel_cmd_mps2",
                    "delta_cmd_rad", "delta_ff_rad", "delta_feedback_rad", "delta_measured_rad",
@@ -410,8 +471,11 @@ def run(argv=None):
                 for j in range(controller.hp + 1):
                     ri = min(len(s)-1, int(round(ref_s / .05)))
                     qx, qy, qpsi = global_ref(rx[ri], ry[ri], rpsi[ri])
-                    refs[:, j] = [qx, qy, qpsi, rv[ri]]
-                    ref_s = min(float(s[-1]), ref_s + float(rv[ri]) * controller.td)
+                    target_v = (float(np.interp(elapsed + j * controller.td,
+                                                low_speed_times, low_speed_values))
+                                if args.scenario == "lowspeed" else float(rv[ri]))
+                    refs[:, j] = [qx, qy, qpsi, target_v]
+                    ref_s = min(float(s[-1]), ref_s + target_v * controller.td)
                 success, cost = True, float("nan")
                 mpc_updated = False
                 mpc_compute_time = ""
@@ -420,6 +484,7 @@ def run(argv=None):
                     last_u, success, cost, last_delta_ff = controller.solve(
                         np.array([x, y, psi, max(vx, 0.)]), refs)
                     mpc_compute_time = time.perf_counter() - solve_started
+                    solve_times.append(mpc_compute_time)
                     mpc_updated = True
                     last_control_t = elapsed
                 # CARLA's normalized steering has opposite sign to this MATLAB frame.
@@ -432,9 +497,14 @@ def run(argv=None):
                 steer_fl_deg, steer_fr_deg = _front_wheel_angles(carla, vehicle)
                 delta_measured = -math.radians((steer_fl_deg + steer_fr_deg) / 2.)
                 ref_x, ref_y, ref_psi = refs[:3, 0]
+                cross_track = math.hypot(x-ref_x, y-ref_y)
+                cross_track_values.append(cross_track)
                 writer.writerow({"frame": snapshot.frame, "t_s": elapsed,
                     "sample_period_s": args.dt, "mpc_updated": int(mpc_updated),
-                    "mpc_compute_time_s": mpc_compute_time, "X_m": x, "Y_m": y,
+                    "mpc_compute_time_s": mpc_compute_time,
+                    "understeer_K_s2_per_m": understeer_k,
+                    "yaw_delay_lambda_s": controller.compensation_lambda(max(vx, 0.)),
+                    "X_m": x, "Y_m": y,
                     "psi_rad": psi, "vx_mps": vx, "vy_mps": vy, "speed_mps": math.hypot(vx, vy),
                     "ref_s_m": s[idx], "ref_x_m": ref_x, "ref_y_m": ref_y, "ref_psi_rad": ref_psi,
                     "ref_speed_mps": target_speed, "accel_cmd_mps2": last_u[0], "delta_cmd_rad": last_u[1],
@@ -443,10 +513,10 @@ def run(argv=None):
                     "steer_fl_deg": steer_fl_deg, "steer_fr_deg": steer_fr_deg,
                     "steer_limit_rad": steer_limit,
                     "steer_norm": steer_norm, "throttle": throttle, "brake": brake, "mpc_success": int(success),
-                    "cost": cost, "cross_track_m": math.hypot(x-ref_x, y-ref_y)})
+                    "cost": cost, "cross_track_m": cross_track})
                 if live_plot is not None and (rows % max(1, round(controller.ts/args.dt)) == 0):
                     live_plot.update(elapsed, x, y, math.hypot(vx, vy), target_speed,
-                                     math.hypot(x-ref_x, y-ref_y), math.degrees(last_u[1]),
+                                     cross_track, math.degrees(last_u[1]),
                                      math.degrees(last_delta_ff), math.degrees(delta_measured))
                 if snapshot.frame - last_hud_frame >= 5:
                     world.debug.draw_string(
@@ -467,13 +537,32 @@ def run(argv=None):
                     last_wall = time.monotonic()
                 if rows % 100 == 0: stream.flush()
         status = "path_complete" if progress_idx >= len(s) - 1 else "duration_complete"
+        metric_values = np.asarray(cross_track_values, dtype=float)
+        metrics = {
+            "scenario": args.scenario,
+            "compensation_mode": args.compensation_mode,
+            "curvature_feedforward": args.curvature_feedforward,
+            "understeer_K_s2_per_m": understeer_k,
+            "k_scale": args.k_scale,
+            "samples": len(metric_values),
+            "cross_track_mean_m": float(np.mean(metric_values)) if metric_values.size else float("nan"),
+            "cross_track_std_m": float(np.std(metric_values)) if metric_values.size else float("nan"),
+            "cross_track_max_m": float(np.max(metric_values)) if metric_values.size else float("nan"),
+            "mpc_solve_mean_s": float(np.mean(solve_times)) if solve_times else float("nan"),
+            "mpc_solve_max_s": float(np.max(solve_times)) if solve_times else float("nan"),
+        }
+        with (args.out / "metrics.csv").open("w", newline="", encoding="utf-8") as metric_stream:
+            metric_writer = csv.DictWriter(metric_stream, fieldnames=list(metrics))
+            metric_writer.writeheader(); metric_writer.writerow(metrics)
         if video_sensor is not None:
             video_sensor.stop()
         if video_writer is not None:
             video_writer.close()
             video_writer = None
         (args.out / "run_status.txt").write_text(
-            f"{status}; rows={rows}; simulated_s={elapsed:.3f}\n", encoding="utf-8")
+            f"{status}; rows={rows}; simulated_s={elapsed:.3f}; "
+            f"cross_track_mean={metrics['cross_track_mean_m']:.3f} m; "
+            f"cross_track_max={metrics['cross_track_max_m']:.3f} m\n", encoding="utf-8")
         if live_plot is not None:
             live_plot.save_close(args.out / "mpc_live_plot.png")
         print(f"MPC CARLA complete: {rows} samples in {args.out}")
