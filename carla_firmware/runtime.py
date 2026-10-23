@@ -50,11 +50,21 @@ def tick_checked(world, previous_frame, dt, timeout=30.0):
     return frame
 
 
-def wheelbase_from_physics(physics, override=None):
+def wheelbase_from_physics(physics, transform, override=None):
     if len(physics.wheels) != 4:
         raise ValueError("The selected vehicle must have exactly four wheels")
-    # CARLA wheel positions are reported in centimetres, unlike world transforms.
-    positions = [float(w.position.x) * 0.01 for w in physics.wheels]
+    # CARLA 0.9.15 reports wheel positions in world coordinates (centimetres),
+    # while actor transforms and center_of_mass are in metres/local coordinates.
+    # Project each wheel into the vehicle's local forward axis before comparing
+    # it with the local COM; sorting global X coordinates fails for rotated cars.
+    location = transform.location
+    forward = transform.get_forward_vector()
+    positions = [
+        ((float(w.position.x) * 0.01 - float(location.x)) * float(forward.x)
+         + (float(w.position.y) * 0.01 - float(location.y)) * float(forward.y)
+         + (float(w.position.z) * 0.01 - float(location.z)) * float(forward.z))
+        for w in physics.wheels
+    ]
     front = sorted(positions, reverse=True)[:2]
     rear = sorted(positions)[:2]
     inferred = (sum(front) / 2.0) - (sum(rear) / 2.0)
@@ -75,7 +85,9 @@ def physics_report(vehicle, wheelbase_override=None):
     front_steer = [float(w.max_steer_angle) for w in list(physics.wheels)[:2]]
     if not all(math.isfinite(v) for v in front_steer) or max(front_steer) <= 0:
         raise ValueError("Vehicle physics has no valid front wheel steering range")
-    wheelbase, source, inferred = wheelbase_from_physics(physics, wheelbase_override)
+    wheelbase, source, inferred = wheelbase_from_physics(
+        physics, vehicle.get_transform(), wheelbase_override
+    )
     # Serialize the complete public CARLA control object without depending on a
     # version-specific attribute list.
     from .api import _attrs, WHEEL_NAMES

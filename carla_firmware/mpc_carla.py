@@ -229,15 +229,22 @@ def run(argv=None):
         vehicle.apply_control(carla.VehicleControl(brake=1.0))
         # CARLA snapshots do not include a newly spawned actor until the world ticks.
         old_frame = tick_checked(world, None, args.dt, args.timeout)
-        physics, _ = physics_report(vehicle)
+        physics, physics_data = physics_report(vehicle)
         wheels = list(physics.wheels)
-        wheelbase, wheelbase_source, _ = wheelbase_from_physics(physics)
-        # CARLA reports wheel positions in centimetres and COM in metres.
-        # Estimate each axle from the two most-forward/rearward wheel locations,
-        # then measure lf/lr from the actual center of mass.
-        wheel_x_m = [float(w.position.x) * 0.01 for w in wheels]
-        front_x = sum(sorted(wheel_x_m, reverse=True)[:2]) / 2.0
-        rear_x = sum(sorted(wheel_x_m)[:2]) / 2.0
+        vehicle_transform = vehicle.get_transform()
+        wheelbase, wheelbase_source, _ = wheelbase_from_physics(physics, vehicle_transform)
+        # wheel.position is world-space cm; project relative to the vehicle
+        # origin into its local forward axis before comparing with local COM.x.
+        origin = vehicle_transform.location
+        forward = vehicle_transform.get_forward_vector()
+        wheel_x_local = [
+            ((float(w.position.x) * .01 - float(origin.x)) * float(forward.x)
+             + (float(w.position.y) * .01 - float(origin.y)) * float(forward.y)
+             + (float(w.position.z) * .01 - float(origin.z)) * float(forward.z))
+            for w in wheels
+        ]
+        front_x = sum(sorted(wheel_x_local, reverse=True)[:2]) / 2.0
+        rear_x = sum(sorted(wheel_x_local)[:2]) / 2.0
         com_x = float(physics.center_of_mass.x)
         lf, lr = front_x - com_x, com_x - rear_x
         if not all(math.isfinite(v) and v > 0 for v in (wheelbase, lf, lr)):

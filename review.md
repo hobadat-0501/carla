@@ -119,19 +119,17 @@ MATLAB nạp trực tiếp biến $u = [a, \delta]$ vào phương trình vi phâ
    $$\text{brake} = \text{clip}\left( \frac{-a_{eff}}{6.0}, 0.0, 0.8 \right)$$
 
 ### 4.4. Đọc động tham số hình học xe từ CARLA
-Firmware CARLA suy ra chiều dài cơ sở từ vị trí bánh xe và tính khoảng cách từ tâm khối lượng đến hai cầu. CARLA trả vị trí bánh xe theo cm nhưng `center_of_mass.x` theo m, vì vậy cần đổi đơn vị trước khi tính:
+Firmware CARLA 0.9.15 trả vị trí bánh xe theo tọa độ thế giới cm, trong khi transform actor và `center_of_mass.x` dùng mốc local mét. Vì vậy cần đổi đơn vị, trừ vị trí actor rồi chiếu lên hướng tiến của xe trước khi tính hình học:
 ```python
-# Hai tọa độ x lớn nhất thuộc cầu trước, nhỏ nhất thuộc cầu sau.
-wheel_x_m = [float(w.position.x) * 0.01 for w in physics.wheels]
-front_x = sum(sorted(wheel_x_m, reverse=True)[:2]) / 2.0
-rear_x = sum(sorted(wheel_x_m)[:2]) / 2.0
+# chiếu wheel.position - vehicle_transform.location lên hướng tiến của xe;
+# front_x/rear_x là trung bình hai giá trị local lớn nhất/nhỏ nhất.
 com_x = float(physics.center_of_mass.x)
 wheelbase = front_x - rear_x
 lf = front_x - com_x
 lr = com_x - rear_x
 steer_limit = math.radians(min(float(w.max_steer_angle) for w in wheels[:2]))
 ```
-Firmware kiểm tra wheelbase, `lf` và `lr` đều dương, đồng thời xác nhận `lf + lr` tương thích với wheelbase. Nếu hình học không hợp lệ, chương trình dừng trước khi khởi chạy MPC. Kết quả `mpc_wind10_map_03` được tạo trước bản sửa và ghi wheelbase khoảng 0,05 m; không dùng kết quả đó để đánh giá firmware đã sửa.
+Firmware kiểm tra wheelbase, `lf` và `lr` đều dương, đồng thời xác nhận `lf + lr` tương thích với wheelbase. Nếu hình học không hợp lệ, chương trình dừng trước khi khởi chạy MPC. Kết quả `mpc_wind10_map_03` được tạo trước bản sửa; không dùng kết quả đó để đánh giá firmware đã sửa.
 
 ### 4.5. Cơ chế chống "nhảy cóc" điểm chiếu (Projection Jump Prevention)
 * Trong MATLAB, hàm [`getref()`](file:///e:/tailieu/UTC/Akerman/Carla_simulation_kinematic/matlab/mpc/scenario.m#L128) quét tìm kiếm trong cửa sổ $[-60, +600]$ bước điểm.
