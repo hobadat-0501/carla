@@ -12,6 +12,8 @@ from scipy.optimize import minimize
 
 from .runtime import configure_world, physics_report, tick_checked, validate_carla
 
+ROOT = Path(__file__).resolve().parent.parent
+
 
 def _reference(kind: str, length: float, ds: float = .05):
     s = np.arange(0.0, length + ds, ds)
@@ -121,7 +123,12 @@ class _LivePlot:
 def run(argv=None):
     p = argparse.ArgumentParser(description="MATLAB kinematic MPC in CARLA 0.9.15")
     p.add_argument("--host", default="127.0.0.1"); p.add_argument("--port", type=int, default=2000)
-    p.add_argument("--map", default="Town06"); p.add_argument("--spawn-index", type=int, default=0)
+    p.add_argument("--map-file", type=Path, default=ROOT / "map" / "scene.xodr",
+                   help="custom OpenDRIVE map file (defaults to map/scene.xodr)")
+    p.add_argument("--road-id", type=int, default=1)
+    p.add_argument("--lane-id", type=int, default=-1)
+    p.add_argument("--spawn-s", type=float, default=100.0,
+                   help="longitudinal position on the selected OpenDRIVE road, in metres")
     p.add_argument("--vehicle", default="vehicle.tesla.model3")
     p.add_argument("--scenario", choices=("wind07", "wind10", "sine10", "sine15"), default="wind10")
     p.add_argument("--duration", type=float, default=60); p.add_argument("--dt", type=float, default=.01)
@@ -135,15 +142,28 @@ def run(argv=None):
     args.out.mkdir(parents=True, exist_ok=False)
     client = carla.Client(args.host, args.port); client.set_timeout(args.timeout)
     validate_carla(client)
-    world = client.load_world(args.map)
+    map_file = args.map_file.expanduser().resolve()
+    if not map_file.is_file():
+        raise FileNotFoundError(f"OpenDRIVE map file not found: {map_file}")
+    xodr = map_file.read_text(encoding="utf-8")
+    world = client.generate_opendrive_world(xodr, carla.OpendriveGenerationParameters(
+        vertex_distance=2.0, max_road_length=50.0, wall_height=0.0, additional_width=.6,
+        smooth_junctions=True, enable_mesh_visibility=True))
     old_settings = configure_world(world, args.dt)
     actors = []
     try:
-        spawn_points = world.get_map().get_spawn_points()
-        if args.spawn_index >= len(spawn_points): raise ValueError("spawn index is out of range")
+        if args.spawn_s < 0:
+            raise ValueError("--spawn-s must be nonnegative")
+        spawn = world.get_map().get_waypoint_xodr(args.road_id, args.lane_id, args.spawn_s)
+        if spawn is None:
+            raise RuntimeError(
+                f"No waypoint at road {args.road_id}, lane {args.lane_id}, s={args.spawn_s:g} m in {map_file}"
+            )
+        spawn = spawn.transform
+        spawn.location.z += .5
         bp = world.get_blueprint_library().find(args.vehicle)
         bp.set_attribute("role_name", "mpc_ego")
-        vehicle = world.try_spawn_actor(bp, spawn_points[args.spawn_index])
+        vehicle = world.try_spawn_actor(bp, spawn)
         if vehicle is None: raise RuntimeError("Could not spawn vehicle at selected point")
         actors.append(vehicle)
         vehicle.apply_control(carla.VehicleControl(brake=1.0))
@@ -160,7 +180,7 @@ def run(argv=None):
         steer_limit = math.radians(min(float(w.max_steer_angle) for w in wheels[:2]))
         controller = KinematicMPC(lf, lr, steer_limit)
         s, rx, ry, rpsi, rv = _reference(args.scenario, 820 if args.scenario.startswith("wind") else 290)
-        origin = spawn_points[args.spawn_index]
+        origin = spawn
         yaw = math.radians(origin.rotation.yaw)
         c, sn = math.cos(yaw), math.sin(yaw)
         def global_ref(x, y, psi):
@@ -170,6 +190,9 @@ def run(argv=None):
             return (origin.location.x + c*x + sn*y, -origin.location.y - sn*x + c*y,
                     -yaw + psi)
         live_plot = _LivePlot(*global_ref(rx, ry, rpsi)[:2]) if args.plot else None
+        (args.out / "map_used.txt").write_text(
+            f"OpenDRIVE: {map_file}\nroad_id={args.road_id}\nlane_id={args.lane_id}\nspawn_s_m={args.spawn_s:g}\n",
+            encoding="utf-8")
         frame = float(world.get_snapshot().timestamp.elapsed_seconds)
         elapsed = 0.; last_control_t = -1e9; progress_idx = 0
         last_u = np.zeros(2); rows = 0; last_wall = time.monotonic()

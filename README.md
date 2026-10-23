@@ -29,24 +29,26 @@ python carla_sim.py fit --runs ket_qua/ngang_01 --out ket_qua/model.json
 
 ## MATLAB kinematic MPC in CARLA
 
-`carla_mpc.py` runs a Python port of `matlab/mpc/kin_mpc.m` on a live CARLA vehicle. It uses the same MPC sample time (0.1 s), prediction step (0.2 s), horizon (8), cost weights, acceleration limits, steering limits, and steering slew limits. The kinematic geometry is read from the spawned CARLA vehicle's physics. The MATLAB `wind07`, `wind10`, `sine10`, and `sine15` reference paths are available.
+`carla_mpc.py` runs a Python port of `matlab/mpc/kin_mpc.m` on a live CARLA vehicle. It uses the same MPC sample time (0.1 s), prediction step (0.2 s), horizon (8), cost weights, acceleration limits, steering limits, and steering slew limits. The kinematic geometry is read from the spawned CARLA vehicle's physics. The MATLAB `wind07`, `wind10`, `sine10`, and `sine15` reference paths are available. The runner generates its world from the project's RoadRunner OpenDRIVE map in `map/scene.xodr`; it does not load Town maps.
 
-Start CARLA 0.9.15, activate the environment described above, then run:
+Start CARLA 0.9.15, activate the environment described above, then run from the project directory:
 
 ```bash
-python carla_mpc.py --map Town06 --spawn-index 0 --scenario wind10 --duration 60 --out ket_qua/mpc_wind10_01
+python carla_mpc.py --scenario wind10 --duration 60 --plot --out ket_qua/mpc_wind10_01
 ```
+
+By default, the vehicle spawns on OpenDRIVE road 1, lane -1, at `s=100 m`. Change the custom map or spawn location with `--map-file`, `--road-id`, `--lane-id`, and `--spawn-s`.
 
 For the sine path:
 
 ```bash
-python carla_mpc.py --map Town06 --spawn-index 0 --scenario sine10 --duration 60 --out ket_qua/mpc_sine10_01
+python carla_mpc.py --scenario sine10 --duration 60 --plot --out ket_qua/mpc_sine10_01
 ```
 
 To show live plots while the CARLA vehicle is driving (requires a graphical desktop), add `--plot`:
 
 ```bash
-python carla_mpc.py --map Town06 --spawn-index 0 --scenario wind10 --duration 60 --plot --out ket_qua/mpc_wind10_live_01
+python carla_mpc.py --scenario wind10 --duration 60 --plot --out ket_qua/mpc_wind10_live_01
 ```
 
 The live window shows CARLA vehicle position against the reference, measured/reference speed, and cross-track error. At the end it saves `mpc_live_plot.png` beside `states_mpc.csv`.
