@@ -196,7 +196,7 @@ def run(argv=None):
     p.add_argument("--timeout", type=float, default=30); p.add_argument("--fast", action="store_true")
     p.add_argument("--plot", action="store_true", help="show live path, speed, and cross-track plots")
     p.add_argument("--camera-mode", choices=("overhead", "follow", "follow-free", "manual"),
-                   default="manual",
+                   default="follow-free",
                    help="spectator: start by car then use CARLA controls (default), fixed overhead, locked rear follow, or free-look follow")
     p.add_argument("--camera-height", type=float, default=80.0,
                    help="height above spawn for overhead spectator view, in metres")
@@ -204,9 +204,12 @@ def run(argv=None):
                    help="legacy alias for --camera-mode manual")
     p.add_argument("--no-trail", action="store_true",
                    help="disable the persistent vehicle path drawn in the CARLA world")
+    p.add_argument("--video-fps", type=int, default=10,
+                   help="FPS for the CARLA camera recording saved with this run")
     args = p.parse_args(argv)
     if args.dt <= 0 or args.duration <= 0: p.error("--dt and --duration must be positive")
     if args.camera_height <= 0: p.error("--camera-height must be positive")
+    if args.video_fps <= 0: p.error("--video-fps must be positive")
     if args.no_spectator_follow: args.camera_mode = "manual"
     import carla
     args.out.mkdir(parents=True, exist_ok=False)
@@ -221,6 +224,9 @@ def run(argv=None):
         smooth_junctions=True, enable_mesh_visibility=True))
     old_settings = configure_world(world, args.dt)
     actors = []
+    video_writer = None
+    video_sensor = None
+    video_errors = []
     try:
         if args.spawn_s < 0:
             raise ValueError("--spawn-s must be nonnegative")
@@ -249,6 +255,31 @@ def run(argv=None):
         vehicle = world.try_spawn_actor(bp, spawn)
         if vehicle is None: raise RuntimeError("Could not spawn vehicle at selected point")
         actors.append(vehicle)
+        import imageio.v2 as imageio
+        video_writer = imageio.get_writer(
+            args.out / "carla_vehicle_follow.mp4", fps=args.video_fps,
+            codec="libx264", quality=7, macro_block_size=16)
+        camera_bp = world.get_blueprint_library().find("sensor.camera.rgb")
+        camera_bp.set_attribute("image_size_x", "1280")
+        camera_bp.set_attribute("image_size_y", "720")
+        camera_bp.set_attribute("fov", "90")
+        camera_bp.set_attribute("sensor_tick", f"{1.0 / args.video_fps:.6f}")
+        video_sensor = world.spawn_actor(
+            camera_bp,
+            carla.Transform(carla.Location(x=-8.0, z=3.5),
+                            carla.Rotation(pitch=-12.0)),
+            attach_to=vehicle)
+        actors.append(video_sensor)
+
+        def record_camera(image):
+            try:
+                pixels = np.frombuffer(image.raw_data, dtype=np.uint8).reshape(
+                    (image.height, image.width, 4))
+                video_writer.append_data(pixels[:, :, :3][:, :, ::-1])
+            except Exception as exc:
+                video_errors.append(exc)
+
+        video_sensor.listen(record_camera)
         vehicle.apply_control(carla.VehicleControl(brake=1.0))
         # CARLA snapshots do not include a newly spawned actor until the world ticks.
         old_frame = tick_checked(world, None, args.dt, args.timeout)
@@ -297,7 +328,8 @@ def run(argv=None):
         (args.out / "map_used.txt").write_text(
             f"OpenDRIVE: {map_file}\nroad_id={args.road_id}\nlane_id={args.lane_id}\n"
             f"spawn_s_m={args.spawn_s:g}\ncamera_mode={args.camera_mode}\n"
-            f"camera_height_m={args.camera_height:g}\nsteer_slew_weight={args.steer_slew_weight:g}\n"
+            f"camera_height_m={args.camera_height:g}\nvideo_fps={args.video_fps}\n"
+            f"video_file=carla_vehicle_follow.mp4\nsteer_slew_weight={args.steer_slew_weight:g}\n"
             f"wheelbase_m={wheelbase:.6g}\nwheelbase_source={wheelbase_source}\n"
             f"lf_m={lf:.6g}\nlr_m={lr:.6g}\ncom_x_m={com_x:.6g}\n"
             f"steer_limit_deg={math.degrees(steer_limit):.6g}\n"
@@ -427,12 +459,19 @@ def run(argv=None):
                 old_frame = tick_checked(world, old_frame, args.dt, args.timeout)
                 # Use CARLA elapsed time from initial frame rather than accumulated wall time.
                 elapsed = float(world.get_snapshot().timestamp.elapsed_seconds) - frame
+                if video_errors:
+                    raise RuntimeError(f"CARLA video recording failed: {video_errors[0]}")
                 if not args.fast:
                     delay = args.dt - (time.monotonic() - last_wall)
                     if delay > 0: time.sleep(delay)
                     last_wall = time.monotonic()
                 if rows % 100 == 0: stream.flush()
         status = "path_complete" if progress_idx >= len(s) - 1 else "duration_complete"
+        if video_sensor is not None:
+            video_sensor.stop()
+        if video_writer is not None:
+            video_writer.close()
+            video_writer = None
         (args.out / "run_status.txt").write_text(
             f"{status}; rows={rows}; simulated_s={elapsed:.3f}\n", encoding="utf-8")
         if live_plot is not None:
@@ -441,7 +480,13 @@ def run(argv=None):
         return 0
     finally:
         for actor in reversed(actors):
-            if actor.is_alive: actor.destroy()
+            if actor.is_alive:
+                if actor.type_id.startswith("sensor."):
+                    try: actor.stop()
+                    except Exception: pass
+                actor.destroy()
+        if video_writer is not None:
+            video_writer.close()
         world.apply_settings(old_settings)
 
 
