@@ -50,14 +50,16 @@ def _reference(kind: str, length: float, ds: float = .05):
 
 
 class KinematicMPC:
-    def __init__(self, lf, lr, steer_limit, ts=.1, td=.2, hp=8):
+    def __init__(self, lf, lr, steer_limit, ts=.1, td=.2, hp=8, steer_slew_weight=50.):
         self.lf, self.lr, self.L = lf, lr, lf + lr
         self.ts, self.td, self.hp = ts, td, hp
         self.delta_max = min(math.atan(math.tan(math.radians(37)) * self.L / lr), steer_limit)
         self.ddelta_max = math.radians(10) * self.L / lr
         self.q = np.array([10., 10., 5., 5.])
         self.r = np.array([.1, 1.])
-        self.rb = np.array([1., 500.])
+        # CARLA reacts more slowly than the ideal MATLAB plant. A large
+        # steering-slew penalty kept the controller almost straight in CARLA.
+        self.rb = np.array([1., float(steer_slew_weight)])
         self.u = np.zeros((hp, 2))
         self.previous = np.zeros(2)
 
@@ -146,6 +148,8 @@ def run(argv=None):
     p.add_argument("--vehicle", default="vehicle.tesla.model3")
     p.add_argument("--scenario", choices=("wind07", "wind10", "sine10", "sine15"), default="wind10")
     p.add_argument("--duration", type=float, default=60); p.add_argument("--dt", type=float, default=.01)
+    p.add_argument("--steer-slew-weight", type=float, default=50.,
+                   help="MPC steering-change penalty; lower values make CARLA tracking more responsive")
     p.add_argument("--out", type=Path, default=Path("ket_qua/mpc_carla"))
     p.add_argument("--timeout", type=float, default=30); p.add_argument("--fast", action="store_true")
     p.add_argument("--plot", action="store_true", help="show live path, speed, and cross-track plots")
@@ -192,7 +196,8 @@ def run(argv=None):
         com_x = float(physics.center_of_mass.x)
         lf, lr = wheelbase / 2 - com_x, wheelbase / 2 + com_x
         steer_limit = math.radians(min(float(w.max_steer_angle) for w in wheels[:2]))
-        controller = KinematicMPC(lf, lr, steer_limit)
+        controller = KinematicMPC(lf, lr, steer_limit,
+                                  steer_slew_weight=args.steer_slew_weight)
         s, rx, ry, rpsi, rv = _reference(args.scenario, 820 if args.scenario.startswith("wind") else 290)
         origin = spawn
         yaw = math.radians(origin.rotation.yaw)
@@ -205,7 +210,8 @@ def run(argv=None):
                     -yaw + psi)
         live_plot = _LivePlot(*global_ref(rx, ry, rpsi)[:2]) if args.plot else None
         (args.out / "map_used.txt").write_text(
-            f"OpenDRIVE: {map_file}\nroad_id={args.road_id}\nlane_id={args.lane_id}\nspawn_s_m={args.spawn_s:g}\n",
+            f"OpenDRIVE: {map_file}\nroad_id={args.road_id}\nlane_id={args.lane_id}\n"
+            f"spawn_s_m={args.spawn_s:g}\nsteer_slew_weight={args.steer_slew_weight:g}\n",
             encoding="utf-8")
         frame = float(world.get_snapshot().timestamp.elapsed_seconds)
         elapsed = 0.; last_control_t = -1e9; progress_idx = 0
@@ -216,7 +222,7 @@ def run(argv=None):
                    "delta_cmd_rad", "steer_norm", "throttle", "brake", "mpc_success", "cost", "cross_track_m"]
         with (args.out / "states_mpc.csv").open("w", newline="", encoding="utf-8") as stream:
             writer = csv.DictWriter(stream, fieldnames=columns); writer.writeheader()
-            while elapsed < args.duration and s[-1] > 0:
+            while elapsed < args.duration and progress_idx < len(s) - 1:
                 snapshot = world.get_snapshot()
                 state_actor = snapshot.find(vehicle.id)
                 if state_actor is None:
@@ -235,10 +241,12 @@ def run(argv=None):
                 vx = vel.x * math.cos(yaw_world) + vel.y * math.sin(yaw_world)
                 vy = -(-vel.x * math.sin(yaw_world) + vel.y * math.cos(yaw_world))
                 x, y = tf.location.x, -tf.location.y
-                # Progress is the nearest point in a bounded forward window.
-                # Match scenario.getref() in MATLAB: search 3 m behind and
-                # 30 m ahead so the projection cannot jump far down the path.
-                begin, end = max(0, progress_idx - 60), min(len(s), progress_idx + 601)
+                # This runs at 100 Hz, so bound progress to this frame's
+                # physical travel. The MATLAB 30 m window runs only at 10 Hz;
+                # applying it every frame let a distant projection jump ahead.
+                begin = max(0, progress_idx - 60)
+                max_forward = max(1, int(math.ceil(max(vx, 0.) * args.dt / .05)))
+                end = min(len(s), progress_idx + max_forward + 1)
                 gx, gy, _ = global_ref(rx[begin:end], ry[begin:end], rpsi[begin:end])
                 idx = begin + int(np.argmin((gx-x)**2 + (gy-y)**2))
                 progress_idx = max(progress_idx, idx)
@@ -286,7 +294,9 @@ def run(argv=None):
                     if delay > 0: time.sleep(delay)
                     last_wall = time.monotonic()
                 if rows % 100 == 0: stream.flush()
-        (args.out / "run_status.txt").write_text(f"duration_complete; rows={rows}; simulated_s={elapsed:.3f}\n", encoding="utf-8")
+        status = "path_complete" if progress_idx >= len(s) - 1 else "duration_complete"
+        (args.out / "run_status.txt").write_text(
+            f"{status}; rows={rows}; simulated_s={elapsed:.3f}\n", encoding="utf-8")
         if live_plot is not None:
             live_plot.save_close(args.out / "mpc_live_plot.png")
         print(f"MPC CARLA complete: {rows} samples in {args.out}")

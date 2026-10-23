@@ -38,6 +38,7 @@ python carla_mpc.py --scenario wind10 --duration 60 --plot --out ket_qua/mpc_win
 ```
 
 By default, the vehicle spawns on OpenDRIVE road 1, lane -1, at `s=100 m`. Change the custom map or spawn location with `--map-file`, `--road-id`, `--lane-id`, and `--spawn-s`.
+The CARLA MPC uses a lower steering slew penalty than the MATLAB ideal-plant run so it can respond to the vehicle dynamics. Adjust it with `--steer-slew-weight` if needed (default `50`; the prior value was `500`). The run ends when the reference path is complete or `--duration` is reached.
 
 For the sine path:
 
