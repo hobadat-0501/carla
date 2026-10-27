@@ -34,7 +34,8 @@ def forecast_plan(origin_t, z0, dynamic0, controls, controller, mass, lf, lr):
     for step, u in enumerate(np.asarray(controls), start=1):
         z = controller._step(z, u, controller.td)
         d = _dyn_step(d, u, controller.td, mass, lf, lr)
-        rows.append({"origin_t_s": float(origin_t), "horizon_step": step,
+        rows.append({"control_model": getattr(controller, "control_model", "kinematic"),
+                     "origin_t_s": float(origin_t), "horizon_step": step,
                      "horizon_s": step * controller.td,
                      "plan_accel_mps2": float(u[0]), "plan_delta_rad": float(u[1]),
                      "kin_x_m": z[0], "kin_y_m": z[1], "kin_psi_rad": z[2],
@@ -46,7 +47,7 @@ def forecast_plan(origin_t, z0, dynamic0, controls, controller, mass, lf, lr):
 
 def write_prediction_errors(path, forecasts, actual_states):
     """Interpolate measured trajectory at forecast times and save errors per horizon."""
-    fields = ["origin_t_s", "horizon_step", "horizon_s", "plan_accel_mps2", "plan_delta_rad", "actual_t_s",
+    fields = ["control_model", "origin_t_s", "horizon_step", "horizon_s", "plan_accel_mps2", "plan_delta_rad", "actual_t_s",
               "kin_x_m", "kin_y_m", "kin_psi_rad", "kin_speed_mps",
               "kin_position_error_m", "kin_heading_error_rad", "kin_speed_error_mps",
               "dyn_x_m", "dyn_y_m", "dyn_psi_rad", "dyn_vx_mps", "dyn_vy_mps", "dyn_speed_mps",

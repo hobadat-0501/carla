@@ -12,7 +12,7 @@ from scipy.optimize import minimize
 
 from .runtime import (configure_world, physics_report, tick_checked,
                       validate_carla, wheelbase_from_physics)
-from .mpc_prediction import forecast_plan, write_prediction_errors
+from .mpc_prediction import _dyn_step, forecast_plan, write_prediction_errors
 
 ROOT = Path(__file__).resolve().parent.parent
 
@@ -64,9 +64,11 @@ def _front_wheel_angles(carla, vehicle):
 
 
 class KinematicMPC:
-    def __init__(self, lf, lr, steer_limit, ts=.1, td=.2, hp=8, steer_slew_weight=50.):
+    def __init__(self, lf, lr, steer_limit, ts=.1, td=.2, hp=8, steer_slew_weight=50.,
+                 control_model="kinematic", mass=1845.0):
         self.lf, self.lr, self.L = lf, lr, lf + lr
         self.ts, self.td, self.hp = ts, td, hp
+        self.control_model, self.mass = control_model, float(mass)
         self.delta_max = min(math.atan(math.tan(math.radians(37)) * self.L / lr), steer_limit)
         self.ddelta_max = math.radians(10) * self.L / lr
         self.q = np.array([10., 10., 5., 5.])
@@ -82,8 +84,10 @@ class KinematicMPC:
         return z + dt * np.array([z[3] * math.cos(z[2] + beta), z[3] * math.sin(z[2] + beta),
                                   z[3] / self.lr * math.sin(beta), u[0]])
 
-    def solve(self, z0, ref):
+    def solve(self, z0, ref, dynamic_state=None):
         hp, ts, td = self.hp, self.ts, self.td
+        if self.control_model == "dynamic" and dynamic_state is None:
+            raise ValueError("dynamic_state is required for the dynamic MPC model")
         # The reference heading already contains the planned path curvature.
         # Convert it to a steady-state bicycle steering angle, and let MPC
         # optimize a correction around that feed-forward value.
@@ -107,12 +111,21 @@ class KinematicMPC:
         def objective(flat):
             controls = flat.reshape(hp, 2).copy()
             controls[:, 1] += delta_ff
+            dyn = np.asarray(dynamic_state, dtype=float).copy() if self.control_model == "dynamic" else None
             z, prev, cost = z0.copy(), self.previous.copy(), 0.0
             for i, u in enumerate(controls):
+                if dyn is not None:
+                    z = np.array([dyn[0], dyn[1], dyn[2], math.hypot(dyn[3], dyn[4])])
                 e = z - ref[:, i]; e[2] = math.atan2(math.sin(e[2]), math.cos(e[2]))
                 du = u - prev
                 cost += np.dot(self.q, e * e) + np.dot(self.rb, du * du) + np.dot(self.r, u * u)
-                z = self._step(z, u, td); prev = u
+                if dyn is None:
+                    z = self._step(z, u, td)
+                else:
+                    dyn = _dyn_step(dyn, u, td, self.mass, self.lf, self.lr)
+                prev = u
+            if dyn is not None:
+                z = np.array([dyn[0], dyn[1], dyn[2], math.hypot(dyn[3], dyn[4])])
             e = z - ref[:, hp]; e[2] = math.atan2(math.sin(e[2]), math.cos(e[2]))
             return cost + np.dot(self.q, e * e)
         def slew(flat):
@@ -133,12 +146,12 @@ class KinematicMPC:
 
 class _LivePlot:
     """Live path, speed, and tracking-error view for a CARLA MPC run."""
-    def __init__(self, ref_x, ref_y):
+    def __init__(self, ref_x, ref_y, model="kinematic"):
         import matplotlib.pyplot as plt
         self.plt = plt
         plt.ion()
         self.fig, self.axes = plt.subplots(1, 4, figsize=(19, 4.5), constrained_layout=True)
-        self.fig.suptitle("CARLA live kinematic MPC", fontweight="bold")
+        self.fig.suptitle(f"CARLA live {model} MPC", fontweight="bold")
         ax = self.axes[0]
         ax.plot(ref_x, ref_y, "--", color="#9aa6b2", lw=1, label="Reference")
         self.path, = ax.plot([], [], color="#1769aa", lw=1.7, label="CARLA vehicle")
@@ -180,7 +193,7 @@ class _LivePlot:
 
 
 def run(argv=None):
-    p = argparse.ArgumentParser(description="MATLAB kinematic MPC in CARLA 0.9.15")
+    p = argparse.ArgumentParser(description="MATLAB MPC in CARLA 0.9.15")
     p.add_argument("--host", default="127.0.0.1"); p.add_argument("--port", type=int, default=2000)
     p.add_argument("--map-file", type=Path, default=ROOT / "map" / "scene.xodr",
                    help="custom OpenDRIVE map file (defaults to map/scene.xodr)")
@@ -193,6 +206,8 @@ def run(argv=None):
     p.add_argument("--duration", type=float, default=60); p.add_argument("--dt", type=float, default=.01)
     p.add_argument("--steer-slew-weight", type=float, default=50.,
                    help="MPC steering-change penalty; lower values make CARLA tracking more responsive")
+    p.add_argument("--control-model", choices=("kinematic", "dynamic"), default="dynamic",
+                   help="prediction model used inside MPC (control sample period is 100 ms)")
     p.add_argument("--out", type=Path, default=Path("ket_qua/mpc_carla"))
     p.add_argument("--timeout", type=float, default=30); p.add_argument("--fast", action="store_true")
     p.add_argument("--plot", action="store_true", help="show live path, speed, and cross-track plots")
@@ -315,7 +330,8 @@ def run(argv=None):
         steer_limit = math.radians(min(float(w.max_steer_angle) for w in wheels[:2]))
         mass = float(physics.mass)
         controller = KinematicMPC(lf, lr, steer_limit,
-                                  steer_slew_weight=args.steer_slew_weight)
+                                  steer_slew_weight=args.steer_slew_weight,
+                                  control_model=args.control_model, mass=mass)
         s, rx, ry, rpsi, rv = _reference(args.scenario, 820 if args.scenario.startswith("wind") else 290)
         origin = spawn
         yaw = math.radians(origin.rotation.yaw)
@@ -326,12 +342,13 @@ def run(argv=None):
             # references with that same convention (and preserve local heading).
             return (origin.location.x + c*x + sn*y, -origin.location.y - sn*x + c*y,
                     -yaw + psi)
-        live_plot = _LivePlot(*global_ref(rx, ry, rpsi)[:2]) if args.plot else None
+        live_plot = _LivePlot(*global_ref(rx, ry, rpsi)[:2], args.control_model) if args.plot else None
         (args.out / "map_used.txt").write_text(
             f"OpenDRIVE: {map_file}\nroad_id={args.road_id}\nlane_id={args.lane_id}\n"
             f"spawn_s_m={args.spawn_s:g}\ncamera_mode={args.camera_mode}\n"
             f"camera_height_m={args.camera_height:g}\nvideo_fps={args.video_fps}\n"
             f"video_file=carla_vehicle_follow.mp4\nsteer_slew_weight={args.steer_slew_weight:g}\n"
+            f"control_model={args.control_model}\ncontrol_period_s=0.1\nprediction_period_s=0.2\n"
             f"wheelbase_m={wheelbase:.6g}\nwheelbase_source={wheelbase_source}\n"
             f"lf_m={lf:.6g}\nlr_m={lr:.6g}\ncom_x_m={com_x:.6g}\n"
             f"steer_limit_deg={math.degrees(steer_limit):.6g}\n"
@@ -423,8 +440,9 @@ def run(argv=None):
                 if elapsed - last_control_t >= controller.ts - 1e-6:
                     solve_started = time.perf_counter()
                     z_now = np.array([x, y, psi, max(vx, 0.)])
-                    last_u, success, cost, last_delta_ff = controller.solve(z_now, refs)
                     d_now = np.array([x, y, psi, vx, vy, yaw_rate])
+                    last_u, success, cost, last_delta_ff = controller.solve(
+                        z_now, refs, dynamic_state=d_now)
                     prediction_rows.extend(forecast_plan(elapsed, z_now, d_now, controller.u,
                                                          controller, mass, lf, lr))
                     mpc_compute_time = time.perf_counter() - solve_started
