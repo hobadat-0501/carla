@@ -12,6 +12,7 @@ from scipy.optimize import minimize
 
 from .runtime import (configure_world, physics_report, tick_checked,
                       validate_carla, wheelbase_from_physics)
+from .mpc_prediction import forecast_plan, write_prediction_errors
 
 ROOT = Path(__file__).resolve().parent.parent
 
@@ -399,6 +400,7 @@ def run(argv=None):
         elapsed = 0.; last_control_t = -1e9; progress_idx = 0
         cross_track_values = []; solve_times = []
         last_u = np.zeros(2); last_delta_ff = 0.; rows = 0; last_wall = time.monotonic()
+        prediction_rows = []; actual_states = []
         last_camera_frame = -10; last_hud_frame = -10
         last_follow_vehicle_location = None
         last_trail_frame = -10; last_trail_location = None
@@ -457,6 +459,8 @@ def run(argv=None):
                 vx = vel.x * math.cos(yaw_world) + vel.y * math.sin(yaw_world)
                 vy = -(-vel.x * math.sin(yaw_world) + vel.y * math.cos(yaw_world))
                 x, y = tf.location.x, -tf.location.y
+                yaw_rate = -math.radians(state_actor.get_angular_velocity().z)
+                actual_states.append((elapsed, x, y, psi, vx, vy, yaw_rate))
                 # This runs at 100 Hz, so bound progress to this frame's
                 # physical travel. The MATLAB 30 m window runs only at 10 Hz;
                 # applying it every frame let a distant projection jump ahead.
@@ -481,8 +485,11 @@ def run(argv=None):
                 mpc_compute_time = ""
                 if elapsed - last_control_t >= controller.ts - 1e-6:
                     solve_started = time.perf_counter()
-                    last_u, success, cost, last_delta_ff = controller.solve(
-                        np.array([x, y, psi, max(vx, 0.)]), refs)
+                    z_now = np.array([x, y, psi, max(vx, 0.)])
+                    last_u, success, cost, last_delta_ff = controller.solve(z_now, refs)
+                    d_now = np.array([x, y, psi, vx, vy, yaw_rate])
+                    prediction_rows.extend(forecast_plan(elapsed, z_now, d_now, controller.u,
+                                                         controller, mass, lf, lr))
                     mpc_compute_time = time.perf_counter() - solve_started
                     solve_times.append(mpc_compute_time)
                     mpc_updated = True
@@ -536,6 +543,7 @@ def run(argv=None):
                     if delay > 0: time.sleep(delay)
                     last_wall = time.monotonic()
                 if rows % 100 == 0: stream.flush()
+        write_prediction_errors(args.out / "mpc_prediction_errors.csv", prediction_rows, actual_states)
         status = "path_complete" if progress_idx >= len(s) - 1 else "duration_complete"
         metric_values = np.asarray(cross_track_values, dtype=float)
         metrics = {
