@@ -329,9 +329,12 @@ def run(argv=None):
             )
         steer_limit = math.radians(min(float(w.max_steer_angle) for w in wheels[:2]))
         mass = float(physics.mass)
+        controller_td = .1 if args.control_model == "dynamic" else .2
+        controller_hp = round(1.6 / controller_td)
         controller = KinematicMPC(lf, lr, steer_limit,
                                   steer_slew_weight=args.steer_slew_weight,
-                                  control_model=args.control_model, mass=mass)
+                                  control_model=args.control_model, mass=mass,
+                                  ts=.1, td=controller_td, hp=controller_hp)
         s, rx, ry, rpsi, rv = _reference(args.scenario, 820 if args.scenario.startswith("wind") else 290)
         origin = spawn
         yaw = math.radians(origin.rotation.yaw)
@@ -348,7 +351,7 @@ def run(argv=None):
             f"spawn_s_m={args.spawn_s:g}\ncamera_mode={args.camera_mode}\n"
             f"camera_height_m={args.camera_height:g}\nvideo_fps={args.video_fps}\n"
             f"video_file=carla_vehicle_follow.mp4\nsteer_slew_weight={args.steer_slew_weight:g}\n"
-            f"control_model={args.control_model}\ncontrol_period_s=0.1\nprediction_period_s=0.2\n"
+            f"control_model={args.control_model}\ncontrol_period_s=0.1\nprediction_period_s={controller_td:g}\n"
             f"wheelbase_m={wheelbase:.6g}\nwheelbase_source={wheelbase_source}\n"
             f"lf_m={lf:.6g}\nlr_m={lr:.6g}\ncom_x_m={com_x:.6g}\n"
             f"steer_limit_deg={math.degrees(steer_limit):.6g}\n"
